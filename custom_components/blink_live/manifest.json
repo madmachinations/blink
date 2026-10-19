@@ -1,13 +1,13 @@
 {
   "domain": "blink_live",
   "name": "Blink Live",
-  "codeowners": [],
+  "codeowners": ["@madmachinations"],
   "config_flow": true,
   "dependencies": ["ffmpeg", "http", "media_source", "stream"],
   "documentation": "https://github.com/madmachinations/blink",
-  "issue_tracker": "https://github.com/madmachinations/blink/issues",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/madmachinations/blink/issues",
   "requirements": [],
   "version": "0.1.0"
 }

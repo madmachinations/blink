@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +11,9 @@ from blink_live_client.gateway import LiveSession, StreamGateway
 
 @pytest.fixture(scope="session")
 def ffmpeg():
+    # imageio's Linux 7.0.2 binary crashes when demuxing MPEG-TS; use system FFmpeg.
+    if executable := shutil.which("ffmpeg"):
+        return executable
     imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
     return imageio_ffmpeg.get_ffmpeg_exe()
 
@@ -121,6 +125,16 @@ async def test_shared_session_and_cleanup(device, monkeypatch):
 async def test_real_ffmpeg_audio_and_video_pipeline(device, ffmpeg, transport_stream, monkeypatch):
     client = type("Client", (), {"devices": {device.key: device}})()
     client.liveview = AsyncMock(return_value={"server": "fixture"})
+    diagnostics = bytearray()
+    processes = []
+
+    async def capture_stderr(self, process):
+        # This transport contains only synthetic media, so codec errors are safe to show.
+        processes.append(process)
+        while chunk := await process.stderr.read(4096):
+            diagnostics.extend(chunk)
+
+    monkeypatch.setattr(LiveSession, "_stderr", capture_stderr)
 
     class Transport:
         def __init__(self, *args):
@@ -145,7 +159,12 @@ async def test_real_ffmpeg_audio_and_video_pipeline(device, ffmpeg, transport_st
     try:
         async with asyncio.timeout(8):
             while len(captured) < 100_000:
-                captured.extend(await anext(stream))
+                chunk = await anext(stream, None)
+                exit_status = processes[0].returncode if processes else "not started"
+                assert chunk is not None, (
+                    f"FFmpeg exit status: {exit_status}; {diagnostics.decode(errors='replace')}"
+                )
+                captured.extend(chunk)
         session = gateway._sessions[device.key]
         assert session.first_media_seconds is not None
         assert client.liveview.await_count == 1
@@ -170,8 +189,8 @@ async def test_real_ffmpeg_audio_and_video_pipeline(device, ffmpeg, transport_st
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await result.communicate(bytes(captured))
-        assert result.returncode == 0
+        _, stderr = await result.communicate(bytes(captured))
+        assert result.returncode == 0, stderr.decode(errors="replace")
 
 
 async def test_duration_limit_and_missing_ffmpeg_cleanup(device):

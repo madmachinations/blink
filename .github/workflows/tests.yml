@@ -1,8 +1,24 @@
 name: Test, build and release
-on: [push, pull_request]
+on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
+  hacs:
+    name: HACS validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate HACS submission requirements
+        uses: hacs/action@main
+        with:
+          category: integration
+          comment: false
+  hassfest:
+    name: Hassfest validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Home Assistant integration
+        uses: home-assistant/actions/hassfest@master
   client:
     runs-on: ubuntu-latest
     steps:
@@ -10,7 +26,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - run: pip install -e '.[test]' imageio-ffmpeg
+      - name: Install system FFmpeg for media tests
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install -e '.[test]'
       - run: ruff check custom_components tests scripts
       - run: pytest -q
   home-assistant:
@@ -23,7 +41,7 @@ jobs:
       - run: pip install -e '.[test,ha-test]'
       - run: pytest tests/ha -q
   build:
-    needs: [client, home-assistant]
+    needs: [hacs, hassfest, client, home-assistant]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.package.outputs.version }}

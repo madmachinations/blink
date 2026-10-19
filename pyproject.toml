@@ -37,6 +37,7 @@ blink_live_client = ["*.pem", "py.typed", "NOTICE"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["."]
 testpaths = ["tests"]
 
 [tool.ruff]
