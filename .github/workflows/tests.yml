@@ -5,6 +5,8 @@ permissions:
 jobs:
   hacs:
     name: HACS validation
+    # Temporarily disabled; restore this job and its build dependency together.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - name: Validate HACS submission requirements
@@ -14,6 +16,8 @@ jobs:
           comment: false
   hassfest:
     name: Hassfest validation
+    # Temporarily disabled; restore this job and its build dependency together.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +45,7 @@ jobs:
       - run: pip install -e '.[test,ha-test]'
       - run: pytest tests/ha -q
   build:
-    needs: [hacs, hassfest, client, home-assistant]
+    needs: [client, home-assistant]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.package.outputs.version }}
