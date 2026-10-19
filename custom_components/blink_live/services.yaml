@@ -1,0 +1,41 @@
+take_snapshot:
+  name: Take snapshot
+  description: Wake the selected Blink camera to take a new thumbnail, then refresh its cached image. This does not start a live stream or save a file.
+  fields:
+    entity_id:
+      name: Camera
+      required: true
+      selector:
+        entity:
+          integration: blink_live
+          domain: camera
+refresh_clips:
+  name: Refresh clips
+  description: Discover recordings from the configured USB/cloud sources. This does not trigger a new recording or snapshot.
+  fields:
+    entry_id:
+      name: Configuration entry
+      description: Optional Blink Live entry ID; omit to refresh all loaded accounts.
+      selector:
+        text:
+download_clip:
+  name: Download clip
+  description: Save a USB or cloud recording by its stable clip_id. Returns its local path.
+  fields:
+    entity_id:
+      name: Camera
+      required: true
+      selector:
+        entity:
+          integration: blink_live
+          domain: camera
+    clip_id:
+      name: Clip ID
+      required: true
+      selector:
+        text:
+    directory:
+      name: Destination directory
+      description: Existing allowed absolute directory inside the HA container. Defaults to the configured archive directory.
+      selector:
+        text:

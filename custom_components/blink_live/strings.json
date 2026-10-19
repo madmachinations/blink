@@ -1,0 +1,47 @@
+{
+  "title": "Blink Live",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Sign in with Blink",
+        "description": "[Open Blink sign-in]({authorization_url}) in a browser and complete login and MFA. Copy the final URL beginning https://applinks.blink.com/signin/callback and paste it below. If the page cannot open, copy its URL from the address bar. Blink Live does not need your password.",
+        "data": {"callback_url": "Callback URL"}
+      },
+      "verification": {
+        "title": "Verify Blink {kind}",
+        "description": "Blink sent an additional {kind} verification code. Enter it below.",
+        "data": {"pin": "Verification code"}
+      }
+    },
+    "error": {
+      "invalid_auth": "Sign-in was rejected, expired, or the callback did not match. Open the new sign-in link and try again.",
+      "cannot_connect": "Could not complete the Blink request. Check connectivity and try again.",
+      "invalid_response": "Blink returned an unsupported response.",
+      "invalid_pin": "Blink rejected this code. Check the code and try again."
+    },
+    "abort": {
+      "already_configured": "This account is already configured in Blink Live.",
+      "reauth_successful": "Blink Live sign-in updated.",
+      "wrong_account": "Sign in with the account originally configured.",
+      "invalid_auth": "Authorization expired. Start sign-in again."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Blink Live options",
+        "description": "Choose usb, cloud or all for recording discovery and inferred motion. Automatic downloads are optional. Mount persistent storage and add it to allowlist_external_dirs before configuring the archive directory. Local retention runs with automatic downloads enabled; 0 keeps files indefinitely. Push notifications are not yet supported.",
+        "data": {
+          "poll_interval": "Recording and device poll interval (seconds)",
+          "recording_source": "Recording sources (usb, cloud, or all)",
+          "motion_timeout": "Motion sensor reset delay (seconds after discovery)",
+          "stream_duration": "Maximum live session duration (seconds)",
+          "automatic_downloads": "Automatically download newly discovered clips",
+          "archive_directory": "Existing archive directory inside HA",
+          "retention_days": "Archive retention (days; 0 retains indefinitely)"
+        }
+      }
+    },
+    "error": {"invalid_directory": "Choose an existing writable absolute directory allowed by Home Assistant."}
+  }
+}

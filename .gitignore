@@ -1,0 +1,24 @@
+.idea/
+.venv/
+.venv-ha/
+.python/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+.coverage
+htmlcov/
+.blink-live/
+# Credentials copied into the workspace, and HA runtime config-entry storage.
+auth.json
+auth.lock
+auth-recordings.json
+.storage/
+homebridge-blink-cameras-new-api-main/
+event-logs/
+wip/
+
