@@ -9,6 +9,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .blink_live_client import AuthError, BlinkClient, BlinkError, VerificationRequired
+from .blink_live_client.auth import REDIRECT
 from .const import DEFAULT_OPTIONS, DOMAIN
 
 
@@ -46,7 +47,10 @@ class BlinkLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="user",
             data_schema=vol.Schema({vol.Required("callback_url"): str}),
             errors=errors,
-            description_placeholders={"authorization_url": self.authorization_url},
+            description_placeholders={
+                "authorization_url": self.authorization_url,
+                "callback_url": REDIRECT,
+            },
         )
 
     async def _finish(self):

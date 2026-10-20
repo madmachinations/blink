@@ -4,7 +4,7 @@
     "step": {
       "user": {
         "title": "Sign in with Blink",
-        "description": "[Open Blink sign-in]({authorization_url}) in a browser and complete login and MFA. Copy the final URL beginning https://applinks.blink.com/signin/callback and paste it below. If the page cannot open, copy its URL from the address bar. Blink Live does not need your password.",
+        "description": "[Open Blink sign-in]({authorization_url}) in a browser and complete login and MFA. Copy the final URL beginning {callback_url} and paste it below. If the page cannot open, copy its URL from the address bar. Blink Live does not need your password.",
         "data": {"callback_url": "Callback URL"}
       },
       "verification": {

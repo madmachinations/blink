@@ -63,6 +63,10 @@ async def test_config_flow_and_separate_domain(hass, client):
         )
         assert result["type"] == FlowResultType.FORM
         assert result["step_id"] == "user"
+        assert result["description_placeholders"] == {
+            "authorization_url": "https://api.oauth.blink.com/test-only",
+            "callback_url": "https://applinks.blink.com/signin/callback",
+        }
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
             {"callback_url": "https://callback.test"},

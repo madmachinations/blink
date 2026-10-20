@@ -13,6 +13,8 @@ from .blink_live_client import AuthError, BlinkError
 from .const import DOMAIN, PLATFORMS
 from .coordinator import BlinkLiveCoordinator
 
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 
 async def async_setup(hass, config):
     hass.data.setdefault(DOMAIN, {})
