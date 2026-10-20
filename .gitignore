@@ -22,3 +22,22 @@ homebridge-blink-cameras-new-api-main/
 event-logs/
 wip/
 
+# Local recordings, observation logs and environment credentials.
+/recordings/
+*.jsonl
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Private keys and credential containers; public Blink CA PEMs remain tracked.
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ecdsa
+id_ed25519
+.DS_Store
+

@@ -1,7 +1,6 @@
 {
   "domain": "blink_live",
   "name": "Blink Live",
-  "categories": ["security_safety.cameras", "security_safety.doorbells_intercoms"],
   "codeowners": ["@madmachinations"],
   "config_flow": true,
   "dependencies": ["ffmpeg", "http", "media_source", "stream"],
