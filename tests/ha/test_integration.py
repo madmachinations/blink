@@ -264,10 +264,9 @@ async def test_archive_media_source_authentication_and_path_validation(hass, cli
         await source.async_resolve_media(item)
 
 
-@pytest.mark.enable_socket
 @pytest.mark.parametrize("recording_source", ["usb", "cloud", "all"])
 async def test_real_entry_platforms_recording_events_and_reload(
-    hass, device, module, recording_source
+    hass, device, module, recording_source, loopback_sockets
 ):
     """Run actual config-entry/platform setup, coordinator, entity registration and HTTP gateway."""
     from homeassistant.components.camera import async_get_stream_source

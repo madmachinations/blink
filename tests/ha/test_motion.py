@@ -19,7 +19,9 @@ from custom_components.blink_live.const import DOMAIN
 
 
 @pytest.fixture
-async def motion_setup(hass, device, module, clip, enable_custom_integrations, request):
+async def motion_setup(
+    hass, device, module, clip, enable_custom_integrations, request, loopback_sockets
+):
     other = replace(device, id=99, name="Other Door")
     camera = replace(device, id=100, kind="camera", name="Other Camera")
     source = getattr(request, "param", "usb")
@@ -64,7 +66,6 @@ async def motion_setup(hass, device, module, clip, enable_custom_integrations, r
         await hass.async_block_till_done()
 
 
-@pytest.mark.enable_socket
 @pytest.mark.parametrize("motion_setup", ["usb", "cloud", "all"], indirect=True)
 async def test_recording_motion_routing_dedup_and_timer(hass, motion_setup, device, freezer):
     entry, data, entity, other, camera = motion_setup
@@ -140,7 +141,6 @@ async def test_recording_motion_routing_dedup_and_timer(hass, motion_setup, devi
     assert len(events) == 5 and len(rings) == 1
 
 
-@pytest.mark.enable_socket
 async def test_backend_can_be_replaced_without_changing_entities(hass, motion_setup, device):
     entry, _, entity, _, _ = motion_setup
     coordinator = entry.runtime_data
@@ -162,7 +162,6 @@ async def test_backend_can_be_replaced_without_changing_entities(hass, motion_se
         coordinator.async_report_motion(device.key, source="unknown", event_id="2")
 
 
-@pytest.mark.enable_socket
 async def test_switch_restores_without_motion_or_rings_and_timers_are_removed(
     hass,
     motion_setup,
@@ -191,7 +190,6 @@ async def test_switch_restores_without_motion_or_rings_and_timers_are_removed(
     assert len(rings) == 1
 
 
-@pytest.mark.enable_socket
 async def test_camera_motion_switch_uses_observed_state_and_never_rings(hass, motion_setup, device):
     entry, _, entity, other, camera = motion_setup
     coordinator = entry.runtime_data
@@ -235,7 +233,6 @@ async def test_camera_motion_switch_uses_observed_state_and_never_rings(hass, mo
     assert hass.states.get(control).state == "unavailable"
 
 
-@pytest.mark.enable_socket
 async def test_snapshot_cache_and_explicit_capture_service(hass, motion_setup, device):
     from homeassistant.components.camera import get_camera_from_entity_id
     from homeassistant.exceptions import ServiceValidationError
@@ -282,7 +279,6 @@ async def test_snapshot_cache_and_explicit_capture_service(hass, motion_setup, d
         )
 
 
-@pytest.mark.enable_socket
 async def test_cancelled_snapshot_preserves_cache_and_releases_lock(hass, motion_setup, device):
     entry, _, _, _, _ = motion_setup
     coordinator = entry.runtime_data
@@ -305,7 +301,6 @@ async def test_cancelled_snapshot_preserves_cache_and_releases_lock(hass, motion
     assert coordinator.snapshots[device.key] == b"\xff\xd8new"
 
 
-@pytest.mark.enable_socket
 async def test_system_arm_switches_isolate_networks_and_read_state(hass, motion_setup, device):
     entry, _, entity, _, _ = motion_setup
     coordinator = entry.runtime_data
