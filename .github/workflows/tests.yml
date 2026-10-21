@@ -42,6 +42,7 @@ jobs:
       - run: pytest tests/ha -q
   build:
     needs: [hacs, hassfest, client, home-assistant]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.package.outputs.version }}
