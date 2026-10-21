@@ -21,6 +21,21 @@ async def async_get_config_entry_diagnostics(hass, entry):
         "clip_error": coordinator.clip_error,
         "push_supported": False,
         "options": {
-            key: value for key, value in coordinator.options.items() if key != "archive_directory"
+            key: value
+            for key, value in coordinator.options.items()
+            if key
+            in {
+                "poll_interval",
+                "stream_duration",
+                "automatic_downloads",
+                "retention_days",
+                "recording_source",
+                "motion_timeout",
+                "rtsp_enabled",
+                "rtsp_port",
+                "http_events_enabled",
+            }
         },
+        "http_rule_count": len(coordinator.options.get("http_event_rules", [])),
+        "http_delivery_status": dict(coordinator.http_events.results),
     }

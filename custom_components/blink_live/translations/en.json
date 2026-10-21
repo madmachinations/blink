@@ -5,12 +5,16 @@
       "user": {
         "title": "Sign in with Blink",
         "description": "[Open Blink sign-in]({authorization_url}) in a browser and complete login and MFA. Copy the final URL beginning {callback_url} and paste it below. If the page cannot open, copy its URL from the address bar. Blink Live does not need your password.",
-        "data": {"callback_url": "Callback URL"}
+        "data": {
+          "callback_url": "Callback URL"
+        }
       },
       "verification": {
         "title": "Verify Blink {kind}",
         "description": "Blink sent an additional {kind} verification code. Enter it below.",
-        "data": {"pin": "Verification code"}
+        "data": {
+          "pin": "Verification code"
+        }
       }
     },
     "error": {
@@ -28,8 +32,8 @@
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Blink Live options",
+      "general": {
+        "title": "Recordings and playback",
         "description": "Choose usb, cloud or all for recording discovery and inferred motion. Automatic downloads are optional. Mount persistent storage and add it to allowlist_external_dirs before configuring the archive directory. Local retention runs with automatic downloads enabled; 0 keeps files indefinitely. Push notifications are not yet supported.",
         "data": {
           "poll_interval": "Recording and device poll interval (seconds)",
@@ -40,8 +44,62 @@
           "archive_directory": "Existing archive directory inside HA",
           "retention_days": "Archive retention (days; 0 retains indefinitely)"
         }
+      },
+      "init": {
+        "title": "Blink Live options",
+        "menu_options": {
+          "general": "Recordings and playback",
+          "rtsp": "RTSP server",
+          "http_events": "HTTP event requests"
+        }
+      },
+      "rtsp": {
+        "title": "RTSP server",
+        "description": "Disabled by default. Requires a username and password when enabled. Use a reachable HA host address and the chosen port in your player, with RTSP over TCP. Each account needs a different port. Streams are unencrypted; use a trusted network.",
+        "data": {
+          "rtsp_enabled": "Enable RTSP server",
+          "rtsp_host": "Listen address",
+          "rtsp_port": "Listen port",
+          "rtsp_username": "Username",
+          "rtsp_password": "Password"
+        }
+      },
+      "http_events": {
+        "title": "HTTP event requests",
+        "description": "Send optional HTTP requests for accepted motion and doorbell events. Saving a rule or deleting one also saves the enable setting. No requests are sent by simply editing rules.",
+        "data": {
+          "http_events_enabled": "Enable HTTP event requests",
+          "action": "Action"
+        }
+      },
+      "choose_rule": {
+        "title": "Choose HTTP rule",
+        "data": {
+          "rule": "Rule"
+        }
+      },
+      "http_rule": {
+        "title": "HTTP event rule",
+        "description": "Empty camera selection matches all cameras. URL, header values and body support HA templates. Variables include camera_key, camera_name, entity_id, event_type, event_id, source, occurred_at, observed_at, motion_active and event. Headers must be a JSON object of string values. Requests have a five-second timeout and are not retried.",
+        "data": {
+          "name": "Rule name",
+          "enabled": "Enable this rule",
+          "event_type": "Event type",
+          "cameras": "Cameras (empty means all)",
+          "method": "HTTP method",
+          "url": "URL template",
+          "headers": "Headers (JSON object; values can be templates)",
+          "body": "Body template (empty for no body)"
+        }
       }
     },
-    "error": {"invalid_directory": "Choose an existing writable absolute directory allowed by Home Assistant."}
+    "error": {
+      "invalid_directory": "Choose an existing writable absolute directory allowed by Home Assistant.",
+      "rtsp_credentials": "Enter a username and password. The username cannot contain a colon; credentials cannot contain line breaks.",
+      "rtsp_host": "Enter a listen address.",
+      "rule_limit": "A maximum of 32 HTTP rules is supported.",
+      "no_rules": "Create a rule first.",
+      "invalid_http_rule": "Check the name, URL, template syntax, and headers. Headers must be a JSON object with string values."
+    }
   }
 }

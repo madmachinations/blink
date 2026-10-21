@@ -1,57 +1,10 @@
 import asyncio
-import shutil
-import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import pytest
 from blink_live_client.errors import BlinkError
 from blink_live_client.gateway import LiveSession, StreamGateway
-
-
-@pytest.fixture(scope="session")
-def ffmpeg():
-    # imageio's Linux 7.0.2 binary crashes when demuxing MPEG-TS; use system FFmpeg.
-    if executable := shutil.which("ffmpeg"):
-        return executable
-    imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
-    return imageio_ffmpeg.get_ffmpeg_exe()
-
-
-@pytest.fixture(scope="session")
-def transport_stream(ffmpeg):
-    result = subprocess.run(
-        [
-            ffmpeg,
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "testsrc2=size=320x180:rate=15",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=880:sample_rate=48000",
-            "-t",
-            "4",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "ultrafast",
-            "-g",
-            "15",
-            "-c:a",
-            "aac",
-            "-f",
-            "mpegts",
-            "pipe:1",
-        ],
-        capture_output=True,
-        check=True,
-    )
-    return result.stdout
 
 
 async def test_lazy_gateway_token_and_first_viewer_disconnect(device, monkeypatch):

@@ -5,10 +5,11 @@ import logging
 from collections import OrderedDict
 from datetime import timedelta
 from pathlib import Path
+from uuid import uuid4
 
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
 from homeassistant.core import callback
-from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
@@ -19,7 +20,9 @@ from homeassistant.util import dt as dt_util
 from .blink_live_client import AuthError, BlinkClient, BlinkError, VerificationRequired
 from .blink_live_client.gateway import StreamGateway
 from .blink_live_client.recordings import Recordings
+from .blink_live_client.rtsp import RtspServer
 from .const import DEFAULT_OPTIONS, DOMAIN, doorbell_press_signal, motion_signal
+from .http_events import HttpEventDispatcher
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +45,10 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             self.client,
             get_ffmpeg_manager(hass).binary,
             self.options["stream_duration"],
+        )
+        self.rtsp = None
+        self.http_events = HttpEventDispatcher(
+            hass, entry, self.client, async_get_clientsession(hass), self.options
         )
         self.snapshots: dict[str, bytes] = {}
         self.snapshot_cached_at: dict[str, str] = {}
@@ -81,6 +88,21 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             self.options["recording_source"],
         )
         await self.gateway.start()
+        if self.options["rtsp_enabled"]:
+            self.rtsp = RtspServer(
+                self.gateway,
+                self.options["rtsp_host"],
+                self.options["rtsp_port"],
+                self.options["rtsp_username"],
+                self.options["rtsp_password"],
+            )
+            try:
+                await self.rtsp.start()
+            except BlinkError:
+                raise ConfigEntryNotReady(
+                    "Blink Live RTSP listener failed. Check the listen address and "
+                    "choose an unused TCP port in the RTSP options, or disable RTSP."
+                ) from None
 
     async def _notify(self, kind, data):
         device = self.client.devices.get(data["camera_key"])
@@ -149,12 +171,20 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             self._motion_timers.pop(camera_key, None)
             self.motion_active.discard(camera_key)
             async_dispatcher_send(self.hass, motion_signal(self.entry.entry_id), camera_key)
+            cleared = {
+                **self.motion_last[camera_key],
+                "event_id": uuid4().hex,
+                "observed_at": dt_util.utcnow().isoformat(),
+            }
+            self.hass.bus.async_fire(f"{DOMAIN}_motion_cleared", cleared)
+            self.http_events.emit("motion_cleared", cleared)
 
         self._motion_timers[camera_key] = async_call_later(
             self.hass, self.options["motion_timeout"], clear
         )
         async_dispatcher_send(self.hass, motion_signal(self.entry.entry_id), camera_key)
         self.hass.bus.async_fire(f"{DOMAIN}_motion_detected", data)
+        self.http_events.emit("motion_detected", data)
         if device.kind == "doorbell" and self.ring_on_motion.get(camera_key, False):
             self.async_report_doorbell_press(camera_key, source="motion", motion_data=data)
 
@@ -179,6 +209,9 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             "camera_id": device.id,
             "camera_key": camera_key,
             "source": source,
+            "event_id": uuid4().hex,
+            "occurred_at": dt_util.utcnow().isoformat(),
+            "observed_at": dt_util.utcnow().isoformat(),
         }
         if source == "motion" and motion_data:
             data.update(
@@ -192,6 +225,7 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             self.hass, doorbell_press_signal(self.entry.entry_id), camera_key, data
         )
         self.hass.bus.async_fire(f"{DOMAIN}_doorbell_pressed", data)
+        self.http_events.emit("doorbell_pressed", data)
 
     async def _async_update_data(self):
         try:
@@ -262,4 +296,7 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             cancel()
         self._motion_timers.clear()
         self.motion_active.clear()
+        await self.http_events.close()
+        if self.rtsp:
+            await self.rtsp.close()
         await self.gateway.close()

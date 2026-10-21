@@ -44,4 +44,12 @@ class BlinkLiveCamera(BlinkLiveEntity, Camera):
 
     @property
     def extra_state_attributes(self):
-        return {"snapshot_cached_at": self.coordinator.snapshot_cached_at.get(self.device_key)}
+        attributes = {
+            "snapshot_cached_at": self.coordinator.snapshot_cached_at.get(self.device_key)
+        }
+        if self.coordinator.options.get("rtsp_enabled"):
+            # The host is deliberately a placeholder: a wildcard/container bind
+            # address is not necessarily reachable by the RTSP consumer.
+            port = self.coordinator.options["rtsp_port"]
+            attributes["rtsp_url"] = f"rtsp://HA-HOST:{port}/{self.device_key}"
+        return attributes

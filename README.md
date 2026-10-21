@@ -13,6 +13,8 @@ HA's official Blink integration with separate credentials, devices and entities.
 | Feature | What you get |
 | --- | --- |
 | Live video and audio | On-demand live viewing, with a shared upstream session when multiple viewers open the same camera. |
+| Optional RTSP server | Authenticated, on-demand H.264 video and AAC listening audio for Scrypted and other RTSP-over-TCP viewers. Disabled by default. |
+| HTTP event requests | Generic, templated HTTP requests for doorbell presses, motion detection and motion clearing, filtered by camera. Disabled by default. |
 | Apple Home integration | Camera streaming with listening audio and linked doorbell/motion entities through HA's HomeKit Bridge. |
 | Camera thumbnails | Blink's latest stored image displayed without waking the camera, plus an action to take a fresh snapshot. |
 | USB and cloud recordings | Discover and download clips from Sync Module USB storage, Blink cloud storage, or both. |
@@ -84,6 +86,8 @@ share callback URLs or credential files.
 Initial setup handles sign-in. Afterwards, open **Settings → Devices & integrations →
 Blink Live → Configure/Options** to change the settings below. Saving options
 reloads the integration. These settings are not supplied in `configuration.yaml`.
+Choose **Recordings and playback** for the settings in this table. RTSP and HTTP
+event delivery have their own options sections and can be enabled independently.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
@@ -196,6 +200,11 @@ under `/config/.storage/core.config_entries`; your Blink password is not stored.
 Protect access to the config volume and backups. Use HA's reauthentication prompt
 to sign in again if authorization expires.
 
+RTSP credentials and HTTP rule templates (including any endpoint tokens or header
+secrets you enter) are also stored in the config entry. Passwords are masked in the
+RTSP form; request templates remain visible to HA administrators when editing a
+rule. These values are excluded from integration diagnostics and routine logs.
+
 ## Automation actions and events
 
 | Action | Purpose |
@@ -209,6 +218,7 @@ to sign in again if authorization expires.
 | `blink_live_clip_available` | A previously unseen USB/cloud recording was discovered. |
 | `blink_live_clip_saved` | A complete local recording and archive index were committed. |
 | `blink_live_motion_detected` | Activity was inferred from a newly discovered recording. |
+| `blink_live_motion_cleared` | The motion reset timer expired for a camera. |
 | `blink_live_doorbell_pressed` | A press was reported through a button/automation or enabled motion routing. |
 
 Each camera also has a Recording event entity with `clip_available` and `clip_saved`
@@ -244,6 +254,184 @@ homekit:
       camera.blink_live_back:
         support_audio: true
 ```
+
+## Optional RTSP server
+
+Open **Settings → Devices & services → Blink Live → Configure/Options → RTSP
+server**. Set a username and password, enable the server, and save. It is **off by
+default** and uses the FFmpeg already available to HA; no sidecar is required.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| Enable RTSP server | Off | Listen for authenticated RTSP viewers. |
+| Listen address | `0.0.0.0` | Bind to the HA process's IPv4 network interfaces. Use a specific local interface address to restrict listening. |
+| Listen port | `8554` | TCP port. Each enabled Blink Live account needs a different port. |
+| Username / password | Empty | Both are required when enabled. Choose separate RTSP credentials; these are not your Blink login. |
+
+Every discovered camera has a stable path using its Blink Live device key. Find
+the credential-free `rtsp_url` attribute in **Developer tools → States** for the
+camera, replace `HA-HOST` with HA's reachable hostname/IP, and enter the RTSP
+credentials in your player. With the default port, for example:
+
+```text
+rtsp://HA-HOST:8554/123456_doorbell_789012
+rtsp://HA-HOST:8554/123456_camera_345678
+```
+
+If the player requires credentials in the address:
+
+```text
+rtsp://viewer:YOUR-RTSP-PASSWORD@192.168.1.20:8554/123456_doorbell_789012
+```
+
+URL-encode special characters in embedded credentials. To test from a laptop:
+
+```sh
+ffplay -rtsp_transport tcp 'rtsp://viewer:YOUR-RTSP-PASSWORD@192.168.1.20:8554/123456_doorbell_789012'
+```
+
+Only **RTSP 1.0 with RTP/RTCP interleaved over TCP** is supported. Video remains
+H.264 without another video encode; audio is AAC-LC using MPEG4-GENERIC RTP
+packetization. Audio is omitted if the input has none. The RTSP audio packetizer
+encodes audio to provide codec headers expected by common clients. Up to four
+RTSP clients per camera share one packetizer and one gateway subscription; the
+gateway allows four subscriptions total across RTSP and HA/HomeKit viewers.
+There is a limit of 16 simultaneous RTSP connections per account.
+
+Starting the listener or inspecting camera addresses does not wake cameras.
+Opening/describing a particular stream can wake it to obtain its media description.
+The existing maximum session duration still applies, including when HA was already
+viewing that camera. Expiry disconnects RTSP viewers; Blink Live does not
+automatically restart their sessions. A new request can start a new session.
+**Disable prebuffering, continuous recording, and automatic reconnect loops in
+downstream applications** to avoid repeatedly waking battery cameras. RTSP has no
+camera directory or discovery API; add each address manually. ONVIF is not included.
+
+This listener uses Basic authentication and **does not encrypt credentials or
+media**. Keep it on a trusted private network; do not expose it to the internet.
+
+### Network ports
+
+Addresses and ports refer to the network namespace in which HA runs. With Docker
+bridge networking, publish the configured port, for example `8554:8554/tcp` in
+addition to your existing HA ports. With host networking, use the container host's
+reachable IP and allow that TCP port through the host firewall.
+
+Allow viewers to reach the configured RTSP TCP port (default **8554**). No UDP
+ports need to be exposed. Use HA's reachable hostname or IP in stream addresses.
+A viewer in a different container must use an address that reaches HA;
+`127.0.0.1` normally refers to the viewer's own container.
+
+## Optional HTTP event requests
+
+Open **Configure/Options → HTTP event requests**, enable delivery, select **Add
+rule**, then submit. Add up to 32 named rules. Select **Edit rule** to change or
+disable one, or **Delete rule** to remove it. Saving a rule also saves the master
+enable setting; simply opening or editing a form sends no requests.
+
+Each rule selects an event, cameras (empty means all), method, URL, headers, and
+body. Supported methods are GET, POST, PUT, PATCH, and DELETE. Events are:
+
+| Rule event | When it fires |
+| --- | --- |
+| `doorbell_pressed` | Each accepted press: local button/Alexa fallback, enabled Ring on motion, or a future verified Blink press input. |
+| `motion_detected` | Each newly accepted motion report, including repeated reports while the sensor is on. Currently inferred from recordings. |
+| `motion_cleared` | The camera's motion timeout expires; subsequent detections extend this timer. |
+
+Existing HA events and entities continue working independently. Initial recording
+baselines, restored states, startup, and unload send no synthetic detections or
+presses. Direct realtime Blink event reception is still work in progress.
+
+URL, header **values**, and body support HA/Jinja templates. Headers must be a JSON
+object with string values; leave `{}` for no custom headers. Leave the body empty
+for no body. Available variables are:
+
+| Variable | Meaning |
+| --- | --- |
+| `camera_key` / `camera_name` | Stable Blink device key / current display name. |
+| `entity_id` | The HA camera entity ID. |
+| `event_type` / `event_id` | One of the rule events above / identifier of this report. |
+| `source` | `recording`, `manual`, `motion` for Ring on motion, or future `blink_push`. |
+| `occurred_at` / `observed_at` | Original occurrence time when known (otherwise null) / integration observation time, as ISO timestamps. |
+| `motion_active` | `true` for detection, `false` for clearing, null for a press. |
+| `event` | Original event data, including account/network/camera identifiers and any inference attributes. |
+
+For a generic JSON receiver, select **POST** and use, for example:
+
+URL:
+
+```jinja
+http://event-receiver:8080/cameras/{{ camera_key | urlencode }}/events
+```
+
+Headers:
+
+```json
+{"Content-Type": "application/json", "Authorization": "Bearer YOUR-ENDPOINT-TOKEN"}
+```
+
+Body:
+
+```jinja
+{{ {"camera": camera_key, "name": camera_name, "entity_id": entity_id, "type": event_type, "id": event_id, "source": source, "motion": motion_active, "time": occurred_at, "observed_at": observed_at} | to_json }}
+```
+
+Use `to_json` for JSON escaping and `urlencode` for URL path/query values. Templates
+can also map camera keys to different endpoint device IDs or tokens, though separate
+camera-specific rules are usually simpler.
+
+Requests are best effort, queued in order per camera, with a five-second timeout
+per request, 32 queued reports per camera, and at most 32 active camera workers.
+Slow endpoints can delay later requests; full queues drop new reports. There is no
+retry or replay after restart, no redirect following, and no response-body download.
+HTTPS certificate verification stays enabled. For a receiver with a self-signed
+certificate, establish trusted HTTPS or use its private-network HTTP endpoint.
+Failures do not interrupt HA events. Integration diagnostics contain rule IDs and
+last delivery status, without request details or secrets.
+
+### Example: Scrypted without MQTT or a custom plugin
+
+1. Install Scrypted's existing **RTSP Camera**, **Dummy Switch**, and **Webhook**
+   plugins. Add each camera manually using its Blink Live RTSP address and
+   credentials. Select TCP transport. Disable prebuffering and any automatic
+   continuous streaming; if needed, choose Scrypted's FFmpeg RTSP parser for
+   audio compatibility.
+2. Create a separate dummy switch for each camera's motion. Enable **Custom Motion
+   Sensor** on the camera and select that dummy switch as its motion sensor.
+3. For a doorbell, create another dummy switch. Enable **Custom Doorbell Button**
+   on that camera and select the doorbell switch. Configure this switch to reset
+   after one second, so later presses create a new activation. Keep separate
+   switches for motion and presses.
+4. Enable the **Webhook** extension on each dummy switch. In its Webhook settings,
+   create a webhook for **OnOff**, then copy the **Local Base URL** (trusted HTTPS)
+   or **Insecure Local Base URL** (HTTP) from the device console. Append `/turnOn`
+   or `/turnOff` to that URL. Use the generated device IDs/tokens, not Blink keys.
+5. Add the following camera-specific HTTP rules in Blink Live. Use **GET**, headers
+   `{}`, and an empty body. Replace the example host, port, device IDs, and tokens
+   with the URLs Scrypted generated:
+
+| Blink Live event | Example URL |
+| --- | --- |
+| `doorbell_pressed` | `http://scrypted:11080/endpoint/@scrypted/webhook/DOORBELL-SWITCH-ID/TOKEN/turnOn` |
+| `motion_detected` | `http://scrypted:11080/endpoint/@scrypted/webhook/MOTION-SWITCH-ID/TOKEN/turnOn` |
+| `motion_cleared` | `http://scrypted:11080/endpoint/@scrypted/webhook/MOTION-SWITCH-ID/TOKEN/turnOff` |
+
+Set the motion dummy switch's **Reset Sensor** to `0` when using explicit clearing,
+or use a finite reset as a fallback if a clearing request is lost. The doorbell
+dummy switch should retain its short reset. Pressing the HA **Ring doorbell** button
+tests the press path; this does not verify a physical Blink press. Presses faster
+than the dummy switch's reset may merge into one Scrypted activation.
+
+Configure these camera associations before pairing through Scrypted's HomeKit
+plugin. Scrypted handles its Apple Home presentation; Blink Live does not implement
+HKSV. Recording-derived motion arrives after Blink has finished recording, so it
+cannot provide timely HKSV recording triggers. Physical Scrypted/HomeKit playback,
+notifications, and recording behaviour still need validation with your devices.
+
+See Scrypted's [camera setup](https://docs.scrypted.app/add-camera.html),
+[Webhook implementation](https://github.com/koush/scrypted/tree/main/plugins/webhook),
+and [Dummy Switch implementation](https://github.com/koush/scrypted/tree/main/plugins/dummy-switch)
+for the existing endpoint and sensor capabilities used by this example.
 
 ## Development CLI client
 

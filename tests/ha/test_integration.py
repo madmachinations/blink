@@ -424,6 +424,10 @@ async def test_options_require_allowed_writable_directory(hass, client, tmp_path
     entry = MockConfigEntry(domain=DOMAIN, unique_id="1", data=dict(client.auth.state))
     entry.add_to_hass(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == FlowResultType.MENU
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "general"}
+    )
     assert result["type"] == FlowResultType.FORM
     options = {
         "poll_interval": 60,

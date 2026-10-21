@@ -1,6 +1,8 @@
 """Offline fixtures; no test contacts Blink or uses a real account."""
 
 import copy
+import shutil
+import subprocess
 
 import pytest
 from aiohttp import web
@@ -56,3 +58,48 @@ class MemoryStore:
 @pytest.fixture
 def memory():
     return MemoryStore()
+
+
+@pytest.fixture(scope="session")
+def ffmpeg():
+    # imageio's Linux 7.0.2 binary crashes when demuxing MPEG-TS; use system FFmpeg.
+    if executable := shutil.which("ffmpeg"):
+        return executable
+    imageio_ffmpeg = pytest.importorskip("imageio_ffmpeg")
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+@pytest.fixture(scope="session")
+def transport_stream(ffmpeg):
+    result = subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=15",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=880:sample_rate=48000",
+            "-t",
+            "4",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-g",
+            "15",
+            "-c:a",
+            "aac",
+            "-f",
+            "mpegts",
+            "pipe:1",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    return result.stdout
