@@ -116,10 +116,12 @@ class RtpSession:
                     "-loglevel",
                     "quiet",
                     "-nostdin",
+                    # A new viewer can join after the initial SPS/PPS headers.
+                    # Allow a later keyframe inside a bounded probe window.
                     "-probesize",
-                    "32768",
+                    "1048576",
                     "-analyzeduration",
-                    "1000000",
+                    "2000000",
                     "-f",
                     "mpegts",
                     "-i",
@@ -469,13 +471,26 @@ class _Connection:
         except (OSError, EOFError, TimeoutError, asyncio.IncompleteReadError):
             pass
         finally:
-            watcher.cancel()
-            await asyncio.gather(watcher, return_exceptions=True)
-            if self.sender:
-                self.sender.cancel()
-                await asyncio.gather(self.sender, return_exceptions=True)
+            # Shutdown can cancel this connection while a peer disconnect has
+            # already entered cleanup. Do not interrupt the last subscriber's
+            # awaited FFmpeg/session teardown with that second cancellation.
+            cleanup = asyncio.create_task(self._cleanup(watcher))
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
+
+    async def _cleanup(self, watcher):
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        if self.sender:
+            self.sender.cancel()
+            await asyncio.gather(self.sender, return_exceptions=True)
+        try:
             if self.session:
                 await self.server.release(self.session, self.queue)
+        finally:
             self.writer.close()
             with contextlib.suppress(OSError):
                 await self.writer.wait_closed()

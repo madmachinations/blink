@@ -169,6 +169,7 @@ async def test_real_ffmpeg_rtsp_video_audio_and_shared_http(
     url = f"rtsp://viewer:example-test-password@127.0.0.1:{server.port}/{device.key}"
     processes = []
     streams = []
+    viewers = []
     try:
         assert not started
         # Two actual RTSP clients decode both tracks, sharing one packetizer and
@@ -212,7 +213,14 @@ async def test_real_ffmpeg_rtsp_video_audio_and_shared_http(
                 await asyncio.sleep(0.01)
             stream = gateway.subscribe(device)
             streams.append(stream)
-            assert await anext(stream)
+            received = asyncio.Event()
+
+            async def consume_http():
+                async for _chunk in stream:
+                    received.set()
+
+            viewers.append(asyncio.create_task(consume_http()))
+            await received.wait()
             results = await asyncio.gather(*(p.communicate() for p in processes))
         for process, (pcm_audio, stderr) in zip(processes, results, strict=True):
             assert process.returncode == 0, stderr.decode(errors="replace")
@@ -223,6 +231,9 @@ async def test_real_ffmpeg_rtsp_video_audio_and_shared_http(
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+        for viewer in viewers:
+            viewer.cancel()
+        await asyncio.gather(*viewers, return_exceptions=True)
         for stream in streams:
             await stream.aclose()
         await server.close()
@@ -305,6 +316,34 @@ async def test_expiry_disconnect_and_new_request_reopens(rtsp, monkeypatch):
         writer.close()
         await writer.wait_closed()
     assert len(sessions) == 2
+
+
+async def test_server_shutdown_waits_for_in_progress_disconnect_cleanup(rtsp, monkeypatch):
+    server, url = rtsp
+    cleaning, finish = asyncio.Event(), asyncio.Event()
+
+    async def run(self):
+        self.sdp = "v=0\r\nm=video 0 RTP/AVP 96\r\na=control:trackID=0\r\n"
+        self.ready.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleaning.set()
+            await finish.wait()
+
+    monkeypatch.setattr(RtpSession, "run", run)
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+    assert (await request(reader, writer, "DESCRIBE", url))[0] == 200
+    writer.close()
+    await writer.wait_closed()
+    async with asyncio.timeout(2):
+        await cleaning.wait()
+        closing = asyncio.create_task(server.close())
+        await asyncio.sleep(0)
+        assert not closing.done()
+        finish.set()
+        await closing
+    assert not server._sessions and not server._clients
 
 
 async def test_real_video_only_camera_and_last_disconnect(device, ffmpeg, transport_stream):

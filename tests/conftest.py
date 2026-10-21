@@ -86,7 +86,7 @@ def transport_stream(ffmpeg):
             "-i",
             "sine=frequency=880:sample_rate=48000",
             "-t",
-            "4",
+            "8",
             "-c:v",
             "libx264",
             "-preset",
