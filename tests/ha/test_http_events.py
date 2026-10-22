@@ -384,6 +384,7 @@ async def test_diagnostics_exclude_request_and_rtsp_secrets(hass):
     }
     coordinator = SimpleNamespace(
         options=options,
+        push=None,
         client=SimpleNamespace(devices={}, modules={}),
         clip_error=None,
         recordings=SimpleNamespace(state={"seen": [], "archive": [], "pending": []}),

@@ -109,7 +109,19 @@ class BlinkLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class BlinkLiveOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
         self._pending = {**DEFAULT_OPTIONS, **self.config_entry.options}
-        return self.async_show_menu(step_id="init", menu_options=["general", "rtsp", "http_events"])
+        return self.async_show_menu(
+            step_id="init", menu_options=["general", "live_events", "rtsp", "http_events"]
+        )
+
+    async def async_step_live_events(self, user_input=None):
+        if user_input is not None:
+            return self._save({"live_events": user_input["live_events"]})
+        return self.async_show_form(
+            step_id="live_events",
+            data_schema=vol.Schema(
+                {vol.Required("live_events", default=self._pending["live_events"]): bool}
+            ),
+        )
 
     def _save(self, changes):
         return self.async_create_entry(title="", data={**self._pending, **changes})

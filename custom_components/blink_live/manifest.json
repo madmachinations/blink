@@ -6,7 +6,7 @@
   "dependencies": ["ffmpeg", "http", "media_source", "stream"],
   "documentation": "https://github.com/madmachinations/blink",
   "integration_type": "hub",
-  "iot_class": "cloud_polling",
+  "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/madmachinations/blink/issues",
   "requirements": [],
   "version": "0.1.0"

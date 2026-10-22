@@ -8,23 +8,44 @@ from pathlib import Path
 from uuid import uuid4
 
 from homeassistant.components.ffmpeg import get_ffmpeg_manager
-from homeassistant.core import callback
+from homeassistant.core import CoreState, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady, HomeAssistantError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
+from homeassistant.util import json as json_util
+from homeassistant.util.file import WriteError
 
 from .blink_live_client import AuthError, BlinkClient, BlinkError, VerificationRequired
 from .blink_live_client.gateway import StreamGateway
+from .blink_live_client.push import PushReceiver
 from .blink_live_client.recordings import Recordings
 from .blink_live_client.rtsp import RtspServer
-from .const import DEFAULT_OPTIONS, DOMAIN, doorbell_press_signal, motion_signal
+from .const import DEFAULT_OPTIONS, DOMAIN, doorbell_press_signal, motion_signal, push_signal
 from .http_events import HttpEventDispatcher
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class PushStore(Store):
+    """Unlike ordinary HA state, a push checkpoint must fail on a failed write."""
+
+    async def async_save(self, data):
+        if self.hass.state is CoreState.stopping:
+            raise OSError("Push checkpoint refused during shutdown")
+        await super().async_save(data)
+
+    async def _async_write_data(self, data):
+        try:
+            await super()._async_write_data(data)
+        except (WriteError, json_util.SerializationError):
+            # Store normally logs and swallows these errors. Propagate a fixed
+            # error so the receiver cannot publish/ack an unpersisted event.
+            raise OSError("Could not persist Blink push checkpoint") from None
 
 
 class BlinkLiveCoordinator(DataUpdateCoordinator):
@@ -56,9 +77,11 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
         self._snapshot_locks: dict[str, asyncio.Lock] = {}
         self._failures = 0
         self.clip_error: str | None = None
-        # A future receiver selects blink_push and calls the same reporter. Clip
-        # discovery remains independent and must not then also generate motion.
-        self.motion_backend = "recording"
+        self.motion_backend = "blink_push" if self.options["live_events"] else "recording"
+        self.push: PushReceiver | None = None
+        self.push_store = PushStore(
+            hass, 1, f"{DOMAIN}.{entry.entry_id}.push", private=True, atomic_writes=True
+        )
         self.motion_ready = False
         self.motion_active: set[str] = set()
         self.motion_last: dict[str, dict] = {}
@@ -68,6 +91,57 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
 
     async def _save_auth(self, state):
         self.hass.config_entries.async_update_entry(self.entry, data=dict(state))
+
+    async def start_push(self):
+        """Start only after entities and their event listeners are ready."""
+        if not self.options["live_events"]:
+            ir.async_delete_issue(self.hass, DOMAIN, f"{self.entry.entry_id}_live_events")
+            return
+        self.push = PushReceiver(
+            self.client,
+            await self.push_store.async_load() or {},
+            self.push_store.async_save,
+            self._push_event,
+            self._push_status,
+        )
+        self.push.start(
+            lambda coro: self.entry.async_create_background_task(
+                self.hass, coro, "Blink live events"
+            )
+        )
+
+    @callback
+    def _push_status(self, status):
+        issue_id = f"{self.entry.entry_id}_live_events"
+        if status in ("error", "auth_failed"):
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="live_events_failed",
+                translation_placeholders={"status": status},
+            )
+            if status == "auth_failed":
+                self.entry.async_start_reauth(self.hass)
+        elif status in ("connected", "disabled"):
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+        async_dispatcher_send(self.hass, push_signal(self.entry.entry_id))
+
+    @callback
+    def _push_event(self, classification, camera_key, event_id, occurred_at):
+        if not self.motion_ready:
+            return
+        if classification == "camera_motion":
+            self.async_report_motion(
+                camera_key, source="blink_push", event_id=event_id, occurred_at=occurred_at
+            )
+        elif classification == "doorbell_press":
+            self.async_report_doorbell_press(
+                camera_key, source="blink_push", event_id=event_id, occurred_at=occurred_at
+            )
+        async_dispatcher_send(self.hass, push_signal(self.entry.entry_id))
 
     async def initialize(self):
         try:
@@ -131,7 +205,7 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
         event_id: str,
         occurred_at: str | None = None,
     ) -> None:
-        """Common motion input; recording inference today, verified push later.
+        """Common motion input for recording inference and direct Blink push.
 
         Each backend supplies a stable event ID. Push receivers must additionally
         persist deduplication across restarts before enabling live delivery.
@@ -195,8 +269,10 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
         *,
         source: str = "manual",
         motion_data: dict | None = None,
+        event_id: str | None = None,
+        occurred_at: str | None = None,
     ) -> None:
-        """Common input for the local button and a future verified push receiver."""
+        """Common input for the local button and the direct push receiver."""
         device = self.client.devices.get(camera_key)
         if device is None or device.kind != "doorbell":
             raise HomeAssistantError("Blink Live doorbell is no longer available")
@@ -209,8 +285,8 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             "camera_id": device.id,
             "camera_key": camera_key,
             "source": source,
-            "event_id": uuid4().hex,
-            "occurred_at": dt_util.utcnow().isoformat(),
+            "event_id": event_id or uuid4().hex,
+            "occurred_at": occurred_at or dt_util.utcnow().isoformat(),
             "observed_at": dt_util.utcnow().isoformat(),
         }
         if source == "motion" and motion_data:
@@ -292,6 +368,8 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
 
     async def close(self):
         self.motion_ready = False
+        if self.push:
+            await self.push.close()
         for cancel in self._motion_timers.values():
             cancel()
         self._motion_timers.clear()

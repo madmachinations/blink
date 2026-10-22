@@ -22,19 +22,19 @@ HA's official Blink integration with separate credentials, devices and entities.
 | Motion sensors | A Motion binary sensor per camera, inferred from newly available recordings so not live events. That is being worked on. |
 | Camera controls | Enable or disable motion detection on individual cameras and doorbells. |
 | System controls | Arm or disarm each Blink system. |
-| Doorbell buttons | A "ring doorbell" button in HA, and an optional ring-on-motion-detected setting per doorbell which will trigger that the doorbell was pressed. This can be automated via an Alexa routine currently, work is ongoing for actual live doorbell button press events directly from blink. |
+| Live events (experimental) | Opt-in bundled FCM receiver for physical doorbell presses and motion; no extra container. Requires hardware validation. |
+| Doorbell buttons | A "ring doorbell" button in HA, and an optional ring-on-motion-detected setting per doorbell which will trigger that the doorbell was pressed. This can be automated via an Alexa routine currently, experimental direct Blink push reception is available as an opt-in option. |
 | Automation events | Events for new clips, successful downloads, inferred motion and locally reported doorbell presses. |
 | Browser-based sign-in | Blink-hosted login and MFA, token refresh and HA reauthentication. |
 
 ## Current limitations and work in progress
 
-- **Motion is inferred from completed recordings.** Detection includes recording
+- **By default, motion is inferred from completed recordings.** Detection includes recording
   completion and polling delay. A recording's cause is not verified, so manually
   requested recordings can also count as motion.
-- **Direct physical doorbell press detection and real-time motion notifications
-  are still being worked on**, pending further hardware validation. Currently,
-  doorbell events can come from the local button, an automation/Alexa fallback,
-  or explicitly enabled Ring on motion routing.
+- **Direct push reception is experimental and requires hardware validation.**
+  Enable it in Live events options and test a physical press separately from motion.
+  The default remains recording-derived motion and local/Alexa doorbell reporting.
 - Two-way talk, HomeKit Secure Video and continuous recording are not provided.
   Live sessions default to 60 seconds and can be configured up to 300 seconds.
 - Blink connectivity is required, including for USB retrieval. This is not a
@@ -167,7 +167,7 @@ target:
 
 ### Motion and doorbell behavior
 
-A new recording turns its camera's Motion sensor on; it resets after the configured
+By default, a new recording turns its camera's Motion sensor on; it resets after the configured
 delay. Another new clip extends the timer. Expect a delay in these motion events because it cannot trigger until the new recording has finished being created by Blink.
 
 Motion sensors expose `detection_source: recording`, `inferred: true`, `occurred_at`
@@ -190,15 +190,60 @@ target:
 This exists to use an existing Alexa fallback for getting doorbell pressed signals out of Blink,xpose the
 
 Expose the HA button as a scene and use an Alexa routine triggered by the actual Blink
-doorbell press to activate it. This fallback still depends on Alexa; direct Blink press detection is not
-yet available.
+doorbell press to activate it. This fallback still depends on Alexa. The experimental
+live receiver below provides an alternative that needs testing with your account.
+
+### Live events (experimental)
+
+Open **Configure → Live events (experimental)** and enable **Live events**.
+The integration registers an independent Firebase/Android identity, associates it
+with its existing Blink login, and listens for doorbell presses and motion through
+Google's push service. There is no additional container, Firebase project, webhook,
+command-line registration, or separate login to configure. HA needs outbound HTTPS
+and TCP 5228 to `mtalk.google.com`. This remains cloud-dependent.
+
+A diagnostic **Blink Live events connection** binary sensor shows transport status
+and the last accepted event time. **Connected proves only the Google connection**;
+verify that Blink actually sends events to this account session. Persistent failures
+also appear in Repairs. Firebase credentials and FCM tokens are refreshed and
+re-associated automatically; expired Blink authorization uses the existing reauth flow.
+
+In live mode, motion has `detection_source: blink_push` and `inferred: false`.
+Physical presses use `source: blink_push` with a stable event ID and provider time.
+Existing motion sensors, Press entities, HomeKit links, event-bus automations and
+HTTP event rules receive these events. Recording discovery and downloads continue,
+but recordings no longer generate inferred motion, including during push outages.
+Disable Live events to restore recording-derived motion. Manual ringing and the
+optional Ring on motion setting continue to work.
+
+The receiver rejects events older than two minutes, undated events, mismatched
+accounts/regions and ambiguous devices. IDs take precedence over camera names;
+name-only pushes require an exact unique match. Recent IDs persist across restarts
+to suppress replay. A crash after saving an ID but before dispatch can lose that
+event; this is not an exactly-once delivery guarantee. Blink and Google's
+undocumented Android protocols may change.
+
+Before relying on live events:
+
+1. Press the physical button without triggering motion; check for one Press event.
+2. Trigger motion without pressing; check the right camera's Motion sensor and reset.
+3. Repeat both, including on other cameras; confirm events arrive before clip discovery.
+4. Restart HA and interrupt/reconnect the network; check recovery without old rings.
+5. Confirm the Blink mobile app still receives its own notifications.
+
+Our automated tests are offline. Reuse of Blink Live's existing Android OAuth
+session and end-to-end reception still need this physical validation. Upstream
+reports successful reception on doorbell, Outdoor 3 and Mini Pan-Tilt hardware;
+that does not establish compatibility with every account or model.
 
 ## Credentials
 
 OAuth credentials are stored in the config entry
 under `/config/.storage/core.config_entries`; your Blink password is not stored.
 Protect access to the config volume and backups. Use HA's reauthentication prompt
-to sign in again if authorization expires.
+to sign in again if authorization expires. The separate private push identity and
+recent delivery IDs are stored under `/config/.storage/blink_live.<entry_id>.push`.
+Raw push payloads are not logged or retained.
 
 RTSP credentials and HTTP rule templates (including any endpoint tokens or header
 secrets you enter) are also stored in the config entry. Passwords are masked in the
@@ -217,9 +262,9 @@ rule. These values are excluded from integration diagnostics and routine logs.
 | --- | --- |
 | `blink_live_clip_available` | A previously unseen USB/cloud recording was discovered. |
 | `blink_live_clip_saved` | A complete local recording and archive index were committed. |
-| `blink_live_motion_detected` | Activity was inferred from a newly discovered recording. |
+| `blink_live_motion_detected` | Motion arrived through live push, or was inferred from a recording in default mode. |
 | `blink_live_motion_cleared` | The motion reset timer expired for a camera. |
-| `blink_live_doorbell_pressed` | A press was reported through a button/automation or enabled motion routing. |
+| `blink_live_doorbell_pressed` | A press arrived through live push, a button/automation, or enabled motion routing. |
 
 Each camera also has a Recording event entity with `clip_available` and `clip_saved`
 types. Use it for recording automations.
@@ -334,8 +379,8 @@ body. Supported methods are GET, POST, PUT, PATCH, and DELETE. Events are:
 
 | Rule event | When it fires |
 | --- | --- |
-| `doorbell_pressed` | Each accepted press: local button/Alexa fallback, enabled Ring on motion, or a future verified Blink press input. |
-| `motion_detected` | Each newly accepted motion report, including repeated reports while the sensor is on. Currently inferred from recordings. |
+| `doorbell_pressed` | Each accepted press: local button/Alexa fallback, enabled Ring on motion, or an accepted Blink push. |
+| `motion_detected` | Each newly accepted motion report, including repeated reports while the sensor is on. From push in live mode; otherwise inferred from recordings. |
 | `motion_cleared` | The camera's motion timeout expires; subsequent detections extend this timer. |
 
 Existing HA events and entities continue working independently. Initial recording
@@ -351,7 +396,7 @@ for no body. Available variables are:
 | `camera_key` / `camera_name` | Stable Blink device key / current display name. |
 | `entity_id` | The HA camera entity ID. |
 | `event_type` / `event_id` | One of the rule events above / identifier of this report. |
-| `source` | `recording`, `manual`, `motion` for Ring on motion, or future `blink_push`. |
+| `source` | `recording`, `manual`, `motion` for Ring on motion, or `blink_push` for a direct push. |
 | `occurred_at` / `observed_at` | Original occurrence time when known (otherwise null) / integration observation time, as ISO timestamps. |
 | `motion_active` | `true` for detection, `false` for clearing, null for a press. |
 | `event` | Original event data, including account/network/camera identifiers and any inference attributes. |

@@ -184,6 +184,7 @@ async def test_setup_and_unload_release_gateway(hass, client):
     coordinator = MagicMock()
     coordinator.initialize = AsyncMock()
     coordinator.async_config_entry_first_refresh = AsyncMock()
+    coordinator.start_push = AsyncMock()
     coordinator.close = AsyncMock()
     coordinator.async_shutdown = AsyncMock()
     await async_setup(hass, {})

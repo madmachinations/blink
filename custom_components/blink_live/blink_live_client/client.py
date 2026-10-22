@@ -43,6 +43,7 @@ class BlinkClient:
         self._module_locks: dict[int, asyncio.Lock] = {}
         self._verification_info: dict = {}
         self._device_command_lock = asyncio.Lock()
+        self._push_client_id: str | None = None
         # Development diagnostics only; the CLI filters fields before writing them.
         self.observer: Callable[[str, dict], None] | None = None
 
@@ -57,7 +58,9 @@ class BlinkClient:
             raise BlinkError("Invalid Blink region")
         return f"https://rest-{tier}.immedia-semi.com"
 
-    async def request(self, method: str, path: str, body: dict | None = None) -> dict:
+    async def request(
+        self, method: str, path: str, body: dict | None = None, *, client_id: str | None = None
+    ) -> dict:
         """Retry reads on outages; never blindly replay remote command creation."""
         token = await self.auth.token()
         for attempt in range(3):
@@ -73,6 +76,7 @@ class BlinkClient:
                         "LOCALE": "en_US",
                         "Accept": "application/json",
                         "X-Blink-Time-Zone": "UTC",
+                        **({"Client-Id": client_id} if client_id else {}),
                     },
                     allow_redirects=False,
                     timeout=aiohttp.ClientTimeout(total=30),
@@ -94,6 +98,12 @@ class BlinkClient:
                     value = json.loads(data) if data else {}
                     if not isinstance(value, dict):
                         raise BlinkError("Invalid Blink response shape")
+                    if path in {
+                        f"/api/v{version}/accounts/{self.auth.state.get('account_id')}/homescreen"
+                        for version in (3, 4)
+                    }:
+                        if identifier := response.headers.get("Client-Id"):
+                            self._push_client_id = remote_id(identifier)
                     return value
             except ApiError as error:
                 if method != "GET" or error.status not in (429, 500, 502, 503, 504):
@@ -108,6 +118,42 @@ class BlinkClient:
             except (ValueError, TypeError):
                 raise BlinkError("Invalid Blink JSON response") from None
         raise BlinkError("Blink request exhausted retries")
+
+    async def associate_push_token(self, token: str) -> None:
+        """Associate this integration's Android session with its own FCM token."""
+        if not self._push_client_id:
+            await self.request("GET", f"/api/v3/accounts/{self.account_id}/homescreen")
+        if not self._push_client_id:
+            raise BlinkError("Blink did not return a push client identifier")
+        await self.request(
+            "POST",
+            f"/clients/{self._push_client_id}/update",
+            {
+                "app_version": "60.0 (29834864)",
+                "os_version": "Android 14",
+                "client_name": "Blink Live",
+                "notification_key": token,
+            },
+            client_id=self._push_client_id,
+        )
+
+    async def acknowledge_push(self, payload: dict) -> None:
+        """Send an app receipt, without trusting a push to choose the REST host."""
+        if str(payload.get("return_receipt", "")).lower() not in ("1", "true", "yes"):
+            return
+        transaction = payload.get("unique_id")
+        if not transaction or not self._push_client_id:
+            return
+        wanted = (
+            str(payload.get("account_id", "")) == str(self.account_id)
+            and payload.get("tier") == self.auth.state["tier"]
+        )
+        await self.request(
+            "POST",
+            "/api/v2/notification",
+            {"transaction_id": str(transaction), "status": "RECEIVED" if wanted else "UNWANTED"},
+            client_id=self._push_client_id,
+        )
 
     async def initialize(self) -> dict:
         """Resolve account region, then perform any required REST verification."""

@@ -11,6 +11,22 @@ import pytest
 from packaging.version import Version
 
 
+def test_actual_integration_bundles_push_implementation_and_notices(release_tools, tmp_path):
+    build, _ = release_tools
+    root = Path(__file__).resolve().parents[1]
+    archive_path = build.package_integration(root, tmp_path / "integration.zip")
+    with ZipFile(archive_path) as archive:
+        prefix = "custom_components/blink_live/blink_live_client/"
+        for name in ("push.py", "push_proto.py", "push_registration.py", "NOTICE"):
+            assert prefix + name in archive.namelist()
+        notice = archive.read(prefix + "NOTICE").decode()
+        assert "Corey Hayward" in notice and "2024 Your Name" in notice
+        assert all("ha-blink-live-events/" not in name for name in archive.namelist())
+        for name in ("push.py", "push_proto.py", "push_registration.py"):
+            source = archive.read(prefix + name).decode()
+            assert "from receiver" not in source and "import blinkpy" not in source
+
+
 @pytest.fixture
 def release_tools(monkeypatch):
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))

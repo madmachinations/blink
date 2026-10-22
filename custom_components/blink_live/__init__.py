@@ -121,6 +121,7 @@ async def async_setup_entry(hass, entry):
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         # Initial reconciliation and restored switch state must never replay rings.
         coordinator.motion_ready = True
+        await coordinator.start_push()
     except BlinkError:
         await coordinator.close()
         raise ConfigEntryNotReady("Blink Live service unavailable") from None

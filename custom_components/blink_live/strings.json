@@ -34,7 +34,7 @@
     "step": {
       "general": {
         "title": "Recordings and playback",
-        "description": "Choose usb, cloud or all for recording discovery and inferred motion. Automatic downloads are optional. Mount persistent storage and add it to allowlist_external_dirs before configuring the archive directory. Local retention runs with automatic downloads enabled; 0 keeps files indefinitely. Push notifications are not yet supported.",
+        "description": "Choose usb, cloud or all for recording discovery and inferred motion. Automatic downloads are optional. Mount persistent storage and add it to allowlist_external_dirs before configuring the archive directory. Local retention runs with automatic downloads enabled; 0 keeps files indefinitely. Live events can be enabled separately in the Live events options.",
         "data": {
           "poll_interval": "Recording and device poll interval (seconds)",
           "recording_source": "Recording sources (usb, cloud, or all)",
@@ -50,7 +50,8 @@
         "menu_options": {
           "general": "Recordings and playback",
           "rtsp": "RTSP server",
-          "http_events": "HTTP event requests"
+          "http_events": "HTTP event requests",
+          "live_events": "Live events (experimental)"
         }
       },
       "rtsp": {
@@ -91,6 +92,13 @@
           "headers": "Headers (JSON object; values can be templates)",
           "body": "Body template (empty for no body)"
         }
+      },
+      "live_events": {
+        "title": "Live events (experimental)",
+        "description": "Receive doorbell presses and motion directly from Blink push notifications. Everything runs inside this integration. Requires outbound internet access to Google on TCP 5228. In live mode recordings no longer generate inferred motion, including during connection outages. Verify a physical press and separate motion after enabling: a connected transport alone does not prove event delivery. Camera streaming and recording discovery continue independently.",
+        "data": {
+          "live_events": "Enable live events"
+        }
       }
     },
     "error": {
@@ -100,6 +108,12 @@
       "rule_limit": "A maximum of 32 HTTP rules is supported.",
       "no_rules": "Create a rule first.",
       "invalid_http_rule": "Check the name, URL, template syntax, and headers. Headers must be a JSON object with string values."
+    }
+  },
+  "issues": {
+    "live_events_failed": {
+      "title": "Blink live events need attention",
+      "description": "The live event receiver reports {status}. Check outbound internet access, including TCP 5228. If authorization failed, complete the Blink sign-in prompt. Camera streaming and recording discovery continue. You can disable Live events in the integration options to restore recording-derived motion."
     }
   }
 }

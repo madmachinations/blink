@@ -20,7 +20,12 @@ def motion_signal(entry_id: str) -> str:
     return f"{DOMAIN}_{entry_id}_motion"
 
 
+def push_signal(entry_id: str) -> str:
+    return f"{DOMAIN}_{entry_id}_push"
+
+
 DEFAULT_OPTIONS = {
+    "live_events": False,
     "poll_interval": 60,
     "stream_duration": 60,
     "automatic_downloads": False,
