@@ -524,14 +524,41 @@ and automatically selects its USB/cloud source.
 .venv/bin/blink-live watch --source all --directory ./recordings --retention-days 30
 ```
 
-`clips`, `watch` and `event-log` accept `--source usb|cloud|all`; USB is the default.
+`clips` and `watch` accept `--source usb|cloud|all`; USB is the default.
 `watch` polls rather than receiving push notifications, with a minimum interval of
 30 seconds. Retention `0` keeps files indefinitely. Historical first-baseline clips
 are not automatically downloaded. Ctrl-C stops the command and cleans up a preview.
 
 `diagnose DEVICE` checks a bounded live session without a player.
-`event-log --output FILE.jsonl` saves timestamped polling observations to a new,
-private file; it is not a push listener.
+
+```sh
+# Capture for five minutes (the output file must not already exist):
+.venv/bin/blink-live notification-log --output notifications.jsonl --duration 300
+
+# Include original payloads and binary message fields for protocol investigation:
+.venv/bin/blink-live notification-log --output notifications-raw.jsonl --raw
+```
+
+FCM state and recent delivery IDs are stored in `~/.blink-live/auth-push.json`,
+separately from the CLI login and recording metadata.
+
+Press `d` then Enter to mark a physical doorbell press, `m` for motion, or `b` for
+baseline. Use `--no-interactive` when running without a terminal. Ctrl-C or
+`--duration` closes the receiver and flushes the log.
+
+Each JSONL row includes UTC receipt time and elapsed time. `notification_received`
+records the signal before filtering; `notification_result` records acceptance or
+an explicit reason such as `unknown_event_type`, `ambiguous_device`,
+`device_not_found`, `account_mismatch`, `stale`, or `duplicate`. Accepted events,
+connection states, receiver errors and notification receipt outcomes are logged
+separately. Unknown payload key names remain visible even in normal capture.
+
+Output files are created with owner-only permissions and never overwrite an
+existing file. Normal capture retains selected protocol/device fields, omitting
+arbitrary values and credentials. `--raw` deliberately includes unredacted push
+payloads and original protobuf fields (binary fields use base64); keep that file
+private and redact it before sharing. Registration credentials and login frames
+are never included. These captures are development evidence, not HA events.
 
 Credentials are stored in `~/.blink-live/auth.json` with owner-only permissions;
 recording metadata is stored separately beside it. One CLI process may use that
@@ -551,3 +578,5 @@ repository or require Homebridge. Adapted IMMIS protocol code and public vendor
 trust certificates retain the upstream copyright and MIT licence text in the bundled
 [NOTICE](custom_components/blink_live/blink_live_client/NOTICE). Blink Live's own
 licence is [MIT](LICENSE).
+
+Live event functionality is based on work done by Corey Hayward with [ha-blink-live-events](https://github.com/CoreyHayward/ha-blink-live-events)

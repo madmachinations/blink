@@ -17,8 +17,15 @@ def test_actual_integration_bundles_push_implementation_and_notices(release_tool
     archive_path = build.package_integration(root, tmp_path / "integration.zip")
     with ZipFile(archive_path) as archive:
         prefix = "custom_components/blink_live/blink_live_client/"
-        for name in ("push.py", "push_proto.py", "push_registration.py", "NOTICE"):
+        for name in (
+            "push.py",
+            "push_proto.py",
+            "push_registration.py",
+            "notification_log.py",
+            "NOTICE",
+        ):
             assert prefix + name in archive.namelist()
+        assert prefix + "event_log.py" not in archive.namelist()
         notice = archive.read(prefix + "NOTICE").decode()
         assert "Corey Hayward" in notice and "2024 Your Name" in notice
         assert all("ha-blink-live-events/" not in name for name in archive.namelist())

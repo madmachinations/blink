@@ -70,10 +70,15 @@ def classify(payload: dict) -> str | None:
 
 def resolve_device(client, payload: dict):
     """Prefer IDs; never fall back to a name after a supplied ID fails to match."""
+    return resolve_device_result(client, payload)[0]
+
+
+def resolve_device_result(client, payload: dict):
+    """Return a device and a diagnostic reason without relaxing routing rules."""
     if "account_id" in payload and str(payload["account_id"]) != str(client.account_id):
-        return None
+        return None, "account_mismatch"
     if "tier" in payload and payload["tier"] != client.auth.state["tier"]:
-        return None
+        return None, "region_mismatch"
     devices = list(client.devices.values())
     for field, attribute in (
         ("network_id", "network_id"),
@@ -87,11 +92,13 @@ def resolve_device(client, payload: dict):
     if not any(key in payload for key in ("camera_id", "device_id", "serial")):
         name = payload.get("camera_name")
         if not isinstance(name, str) or not name:
-            return None
+            return None, "missing_device_identity"
         devices = [d for d in devices if d.name == name]
     if classify(payload) == "doorbell_press":
         devices = [d for d in devices if d.kind == "doorbell"]
-    return devices[0] if len(devices) == 1 else None
+    if len(devices) != 1:
+        return None, "ambiguous_device" if devices else "device_not_found"
+    return devices[0], "matched"
 
 
 class PushLoginRejected(BlinkError):
@@ -106,12 +113,14 @@ class PushReceiver:
         save: Callable[[dict], Awaitable[None]],
         on_event: Callable[[str, str, str, str | None], None],
         on_status: Callable[[str], None],
+        on_notification: Callable[[str, dict], None] | None = None,
     ):
         self.client = client
         self.state = dict(state)
         self.save = save
         self.on_event = on_event
         self.on_status = on_status
+        self.on_notification = on_notification
         self.registration = PushRegistration(client.session, self.state, save)
         self.status = "disabled"
         self.last_received_at: str | None = None
@@ -130,6 +139,12 @@ class PushReceiver:
         if self._task is None:
             self._task = create_task(self._run())
 
+    async def wait(self):
+        """Wait for a standalone receiver to stop or fail."""
+        if self._task is None:
+            raise BlinkError("Notification receiver has not started")
+        await self._task
+
     async def close(self):
         if self._task:
             self._task.cancel()
@@ -141,6 +156,20 @@ class PushReceiver:
     def _status(self, value):
         self.status = value
         self.on_status(value)
+
+    def _observe(self, kind, **data):
+        if self.on_notification:
+            self.on_notification(kind, data)
+
+    def _decision(self, payload, event_id, reason, device=None):
+        self._observe(
+            "notification_result",
+            event_id=event_id,
+            classification=classify(payload),
+            camera_key=device.key if device else None,
+            accepted=reason == "accepted",
+            reason=reason,
+        )
 
     async def _run(self):
         failures = 0
@@ -160,10 +189,16 @@ class PushReceiver:
                     # Renew registration daily even when the socket remains healthy.
                     async with asyncio.timeout(86400):
                         await self._listen()
-                except AuthError:
+                except AuthError as error:
+                    self._observe(
+                        "receiver_error", stage=self.status, error_type=type(error).__name__
+                    )
                     self._status("auth_failed")
                     return
-                except PushLoginRejected:
+                except PushLoginRejected as error:
+                    self._observe(
+                        "receiver_error", stage=self.status, error_type=type(error).__name__
+                    )
                     reset_android = True
                     failures += 1
                 except (
@@ -174,7 +209,10 @@ class PushReceiver:
                     ValueError,
                     TypeError,
                     KeyError,
-                ):
+                ) as error:
+                    self._observe(
+                        "receiver_error", stage=self.status, error_type=type(error).__name__
+                    )
                     if connected_at is not None and time.monotonic() - connected_at >= 60:
                         failures = 0
                     failures += 1
@@ -276,9 +314,13 @@ class PushReceiver:
             payload = payload_fields(message)
         except (ValueError, TypeError, UnicodeError):
             payload = {}
+        # Development-only observer runs before identity checks, deduplication,
+        # classification and matching. HA does not install one or retain raw data.
+        self._observe("notification_received", message=message, payload=payload)
         identity = string(message, 9) or string(message, 2) or payload.get("unique_id")
         if not isinstance(identity, str) or not identity or len(identity) > 4096:
             self.rejected_events += 1
+            self._decision(payload, None, "invalid_event_identity")
             return
         event_id = hashlib.sha256(identity.encode()).hexdigest()
         recent = self.state.get("event_ids", [])
@@ -286,6 +328,7 @@ class PushReceiver:
         persistent_id = string(message, 9)
         if len(persistent_id) > 4096:
             self.rejected_events += 1
+            self._decision(payload, event_id, "invalid_event_identity")
             return
         ids = self.state.get("persistent_ids", [])
         # Work on a copy so failed persistence cannot suppress a redelivery.
@@ -297,7 +340,11 @@ class PushReceiver:
             )[-MAX_RECENT:],
         }
         if not duplicate or (persistent_id and persistent_id not in ids):
-            await self.save(updated)
+            try:
+                await self.save(updated)
+            except (OSError, ValueError):
+                self._decision(payload, event_id, "checkpoint_failed")
+                raise
             self.state.update(updated)
         if not self._receipts.full():
             self._receipts.put_nowait(
@@ -308,6 +355,7 @@ class PushReceiver:
                 }
             )
         if duplicate:
+            self._decision(payload, event_id, "duplicate")
             return
         now = time.time()
         sent = integer(message, 18) / 1000
@@ -320,17 +368,26 @@ class PushReceiver:
             except ValueError:
                 pass
         classification = classify(payload)
-        device = resolve_device(self.client, payload)
+        device, match_reason = resolve_device_result(self.client, payload)
         sender = string(message, 3)
         package = string(message, 5)
-        if (
-            not classification
-            or device is None
-            or (sender and sender != FIREBASE_SENDER)
-            or (package and package not in (ANDROID_PACKAGE, "media", "motion"))
-            or not sent
-            or not -30 <= now - sent <= MAX_EVENT_AGE
-        ):
+        reason = "accepted"
+        if sender and sender != FIREBASE_SENDER:
+            reason = "sender_mismatch"
+        elif package and package not in (ANDROID_PACKAGE, "media", "motion"):
+            reason = "package_mismatch"
+        elif not classification:
+            reason = "unknown_event_type"
+        elif device is None:
+            reason = match_reason
+        elif not sent:
+            reason = "missing_timestamp"
+        elif now - sent > MAX_EVENT_AGE:
+            reason = "stale"
+        elif now - sent < -30:
+            reason = "future_timestamp"
+        self._decision(payload, event_id, reason, device)
+        if reason != "accepted":
             self.rejected_events += 1
             return
         occurred_at = datetime.fromtimestamp(sent, UTC).isoformat()
@@ -341,17 +398,31 @@ class PushReceiver:
     async def _receipt_worker(self):
         while True:
             payload = await self._receipts.get()
+            transaction = payload.get("unique_id")
+            receipt_id = (
+                hashlib.sha256(str(transaction).encode()).hexdigest() if transaction else None
+            )
             try:
                 for attempt in range(3):
                     try:
                         await self.client.acknowledge_push(payload)
+                        if str(payload.get("return_receipt", "")).lower() in ("1", "true", "yes"):
+                            self._observe(
+                                "notification_receipt", receipt_id=receipt_id, status="completed"
+                            )
                         break
                     except AuthError:
+                        self._observe(
+                            "notification_receipt", receipt_id=receipt_id, status="auth_failed"
+                        )
                         self._status("auth_failed")
                         break
                     except (BlinkError, OSError, ValueError, TypeError, KeyError):
                         if attempt == 2:
                             self.receipt_failures += 1
+                            self._observe(
+                                "notification_receipt", receipt_id=receipt_id, status="failed"
+                            )
                         else:
                             await asyncio.sleep(2**attempt)
             finally:

@@ -20,6 +20,7 @@ auth-recordings.json
 .storage/
 homebridge-blink-cameras-new-api-main/
 event-logs/
+notification-logs/
 wip/
 
 # Local recordings, observation logs and environment credentials.
