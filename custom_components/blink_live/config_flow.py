@@ -2,15 +2,19 @@
 
 import os
 from pathlib import Path
+from uuid import uuid4
 
 import probatio as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
+from homeassistant.exceptions import TemplateError
+from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .blink_live_client import AuthError, BlinkClient, BlinkError, VerificationRequired
 from .blink_live_client.auth import REDIRECT
 from .const import DEFAULT_OPTIONS, DOMAIN
+from .http_events import EVENT_TYPES, METHODS, validate_rule
 
 
 class BlinkLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -104,6 +108,13 @@ class BlinkLiveConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class BlinkLiveOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input=None):
+        self._pending = {**DEFAULT_OPTIONS, **self.config_entry.options}
+        return self.async_show_menu(step_id="init", menu_options=["general", "rtsp", "http_events"])
+
+    def _save(self, changes):
+        return self.async_create_entry(title="", data={**self._pending, **changes})
+
+    async def async_step_general(self, user_input=None):
         errors = {}
         options = {**DEFAULT_OPTIONS, **self.config_entry.options}
         if user_input is not None:
@@ -118,12 +129,10 @@ class BlinkLiveOptionsFlow(config_entries.OptionsFlow):
                 if not valid:
                     errors["archive_directory"] = "invalid_directory"
             if not errors:
-                return self.async_create_entry(
-                    title="", data={**user_input, "archive_directory": directory}
-                )
+                return self._save({**user_input, "archive_directory": directory})
             options.update(user_input)
         return self.async_show_form(
-            step_id="init",
+            step_id="general",
             errors=errors,
             data_schema=vol.Schema(
                 {
@@ -146,6 +155,159 @@ class BlinkLiveOptionsFlow(config_entries.OptionsFlow):
                     vol.Required("retention_days", default=options["retention_days"]): vol.All(
                         vol.Coerce(int), vol.Range(min=0, max=36500)
                     ),
+                }
+            ),
+        )
+
+    async def async_step_rtsp(self, user_input=None):
+        options = {**self._pending, **(user_input or {})}
+        errors = {}
+        if user_input is not None:
+            username, password = options["rtsp_username"], options["rtsp_password"]
+            if options["rtsp_enabled"] and (
+                not username
+                or not password
+                or ":" in username
+                or any(c in username + password for c in "\r\n")
+            ):
+                errors["base"] = "rtsp_credentials"
+            if not options["rtsp_host"].strip():
+                errors["rtsp_host"] = "rtsp_host"
+            if not errors:
+                return self._save({**user_input, "rtsp_host": options["rtsp_host"].strip()})
+        return self.async_show_form(
+            step_id="rtsp",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Required("rtsp_enabled", default=options["rtsp_enabled"]): bool,
+                    vol.Required("rtsp_host", default=options["rtsp_host"]): str,
+                    vol.Required("rtsp_port", default=options["rtsp_port"]): vol.All(
+                        vol.Coerce(int), vol.Range(min=1, max=65535)
+                    ),
+                    vol.Required("rtsp_username", default=options["rtsp_username"]): str,
+                    vol.Required(
+                        "rtsp_password", default=options["rtsp_password"]
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_http_events(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            self._pending["http_events_enabled"] = user_input["http_events_enabled"]
+            action = user_input["action"]
+            if action == "save":
+                return self._save({})
+            if action == "add":
+                if len(self._pending["http_event_rules"]) >= 32:
+                    errors["base"] = "rule_limit"
+                else:
+                    self._editing = None
+                    return await self.async_step_http_rule()
+            elif not self._pending["http_event_rules"]:
+                errors["base"] = "no_rules"
+            else:
+                self._rule_action = action
+                return await self.async_step_choose_rule()
+        return self.async_show_form(
+            step_id="http_events",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        "http_events_enabled", default=self._pending["http_events_enabled"]
+                    ): bool,
+                    vol.Required("action", default="save"): vol.In(
+                        {
+                            "save": "Save",
+                            "add": "Add rule",
+                            "edit": "Edit rule",
+                            "delete": "Delete rule",
+                        }
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_choose_rule(self, user_input=None):
+        rules = self._pending["http_event_rules"]
+        if user_input is not None:
+            self._editing = user_input["rule"]
+            if self._rule_action == "delete":
+                return self._save(
+                    {"http_event_rules": [rule for rule in rules if rule["id"] != self._editing]}
+                )
+            return await self.async_step_http_rule()
+        return self.async_show_form(
+            step_id="choose_rule",
+            data_schema=vol.Schema(
+                {vol.Required("rule"): vol.In({rule["id"]: rule["name"] for rule in rules})}
+            ),
+        )
+
+    async def async_step_http_rule(self, user_input=None):
+        rules = self._pending["http_event_rules"]
+        current = next((rule for rule in rules if rule["id"] == self._editing), {})
+        values = {
+            "name": "",
+            "enabled": True,
+            "event_type": "doorbell_pressed",
+            "cameras": [],
+            "method": "POST",
+            "url": "",
+            "headers": "{}",
+            "body": "",
+            **current,
+            **(user_input or {}),
+        }
+        errors = {}
+        if user_input is not None:
+            # Optional fields are omitted when cleared in the HA form. Do not
+            # retain a previous body when the user removes it while editing.
+            values["body"] = user_input.get("body", "")
+            try:
+                validate_rule(self.hass, values)
+            except (ValueError, TypeError, TemplateError):
+                errors["base"] = "invalid_http_rule"
+            else:
+                saved = {**values, "id": self._editing or uuid4().hex}
+                return self._save(
+                    {
+                        "http_event_rules": [rule for rule in rules if rule["id"] != self._editing]
+                        + [saved]
+                    }
+                )
+        runtime = getattr(self.config_entry, "runtime_data", None)
+        devices = runtime.client.devices if runtime else {}
+        cameras = {device.key: device.name for device in devices.values()}
+        cameras.update({key: cameras.get(key, key) for key in values["cameras"]})
+        multiline = selector.TextSelector(selector.TextSelectorConfig(multiline=True))
+        return self.async_show_form(
+            step_id="http_rule",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Required("name", default=values["name"]): str,
+                    vol.Required("enabled", default=values["enabled"]): bool,
+                    vol.Required("event_type", default=values["event_type"]): vol.In(EVENT_TYPES),
+                    vol.Optional("cameras", default=values["cameras"]): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            multiple=True,
+                            options=[
+                                {"value": key, "label": name} for key, name in cameras.items()
+                            ],
+                        )
+                    ),
+                    vol.Required("method", default=values["method"]): vol.In(METHODS),
+                    vol.Required("url", default=values["url"]): str,
+                    vol.Required("headers", default=values["headers"]): multiline,
+                    vol.Optional(
+                        "body", description={"suggested_value": values["body"]}
+                    ): multiline,
                 }
             ),
         )

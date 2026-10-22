@@ -28,4 +28,11 @@ DEFAULT_OPTIONS = {
     "retention_days": 30,
     "recording_source": "usb",
     "motion_timeout": 60,
+    "rtsp_enabled": False,
+    "rtsp_host": "0.0.0.0",
+    "rtsp_port": 8554,
+    "rtsp_username": "",
+    "rtsp_password": "",
+    "http_events_enabled": False,
+    "http_event_rules": [],
 }

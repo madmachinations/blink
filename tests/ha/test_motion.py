@@ -3,7 +3,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import timedelta
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +16,70 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry, async_
 
 from custom_components.blink_live.blink_live_client import BlinkClient, BlinkError, Network
 from custom_components.blink_live.const import DOMAIN
+
+
+async def test_http_reports_follow_common_event_paths_and_clear_without_replay(
+    hass, motion_setup, device, freezer
+):
+    entry, _, entity, _, _ = motion_setup
+    coordinator = entry.runtime_data
+    emit = coordinator.http_events.emit = MagicMock()
+    coordinator.async_report_motion(device.key, source="recording", event_id="fresh")
+    coordinator.async_report_motion(device.key, source="recording", event_id="fresh")
+    assert emit.call_count == 1
+    assert emit.call_args.args[0] == "motion_detected"
+    await hass.services.async_call(
+        "button", "press", {"entity_id": entity("button", device, "ring_doorbell")}, blocking=True
+    )
+    first = emit.call_args.args[1]
+    assert emit.call_args.args[0] == "doorbell_pressed" and first["source"] == "manual"
+    coordinator.async_report_doorbell_press(device.key)
+    assert emit.call_args.args[1]["event_id"] != first["event_id"]
+    coordinator.ring_on_motion[device.key] = True
+    coordinator.async_report_motion(device.key, source="recording", event_id="next")
+    assert [call.args[0] for call in emit.call_args_list[-2:]] == [
+        "motion_detected",
+        "doorbell_pressed",
+    ]
+    assert emit.call_args.args[1]["source"] == "motion"
+    freezer.move_to(dt_util.utcnow() + timedelta(seconds=11))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert emit.call_args.args[0] == "motion_cleared"
+    assert device.key not in coordinator.motion_active
+    emit.reset_mock()
+    coordinator.motion_ready = False
+    coordinator.async_report_motion(device.key, source="recording", event_id="baseline")
+    emit.assert_not_called()
+    await coordinator.close()
+    emit.assert_not_called()
+
+
+async def test_optional_rtsp_lifecycle_and_attribute(hass, motion_setup, device):
+    entry, _, entity, _, _ = motion_setup
+    coordinator = entry.runtime_data
+    assert coordinator.rtsp is None
+    assert "rtsp_url" not in hass.states.get(entity("camera", device, "camera")).attributes
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **entry.options,
+            "rtsp_enabled": True,
+            "rtsp_host": "127.0.0.1",
+            "rtsp_port": 0,
+            "rtsp_username": "viewer",
+            "rtsp_password": "example-test-password",
+        },
+    )
+    await hass.async_block_till_done()
+    server = entry.runtime_data.rtsp
+    assert server._server is not None
+    assert not server._sessions and not entry.runtime_data.gateway._sessions
+    url = hass.states.get(entity("camera", device, "camera")).attributes["rtsp_url"]
+    assert device.key in url and "password" not in url
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "rtsp_enabled": False})
+    await hass.async_block_till_done()
+    assert server._server is None and entry.runtime_data.rtsp is None
 
 
 @pytest.fixture
