@@ -287,7 +287,7 @@ async def test_real_entry_platforms_recording_events_and_reload(
         domain=DOMAIN,
         unique_id="1",
         title="Blink Live",
-        options={"recording_source": recording_source},
+        options={"recording_source": recording_source, "live_events": False},
         data={
             "account_id": 1,
             "hardware_id": "test",

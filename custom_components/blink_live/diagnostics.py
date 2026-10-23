@@ -40,6 +40,7 @@ async def async_get_config_entry_diagnostics(hass, entry):
                 "recording_source",
                 "motion_timeout",
                 "live_events",
+                "live_motion_timeout",
                 "rtsp_enabled",
                 "rtsp_port",
                 "http_events_enabled",

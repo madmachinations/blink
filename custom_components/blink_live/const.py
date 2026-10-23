@@ -25,7 +25,8 @@ def push_signal(entry_id: str) -> str:
 
 
 DEFAULT_OPTIONS = {
-    "live_events": False,
+    "live_events": True,
+    "live_motion_timeout": 15,
     "poll_interval": 60,
     "stream_duration": 60,
     "automatic_downloads": False,

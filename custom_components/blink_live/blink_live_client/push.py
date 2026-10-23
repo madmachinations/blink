@@ -61,8 +61,10 @@ def classify(payload: dict) -> str | None:
     category, event_type = category.strip().lower(), event_type.strip().lower()
     if category == "media" and event_type == "button_press":
         return "doorbell_press"
-    if event_type == "pir" or (
-        category == "motion" and event_type in ("cloud_motion", "cam2sm_motion")
+    if (
+        event_type == "pir"
+        or (category == "media" and event_type == "cv_motion")
+        or (category == "motion" and event_type in ("cloud_motion", "cam2sm_motion"))
     ):
         return "camera_motion"
     return None

@@ -254,7 +254,9 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             self.http_events.emit("motion_cleared", cleared)
 
         self._motion_timers[camera_key] = async_call_later(
-            self.hass, self.options["motion_timeout"], clear
+            self.hass,
+            self.options["live_motion_timeout" if source == "blink_push" else "motion_timeout"],
+            clear,
         )
         async_dispatcher_send(self.hass, motion_signal(self.entry.entry_id), camera_key)
         self.hass.bus.async_fire(f"{DOMAIN}_motion_detected", data)

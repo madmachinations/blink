@@ -72,6 +72,7 @@ def message(event="button_press", *, identity="push-1", **overrides):
     [
         ({"category": "media", "event_type": "button_press"}, "doorbell_press"),
         ({"category": "media", "event_type": "pir"}, "camera_motion"),
+        ({"category": "media", "event_type": "cv_motion"}, "camera_motion"),
         ({"category": "motion", "event_type": "cloud_motion"}, "camera_motion"),
         ({"category": "motion", "event_type": "cam2sm_motion"}, "camera_motion"),
         ({"category": "media", "event_type": "unknown"}, None),

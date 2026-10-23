@@ -115,11 +115,16 @@ class BlinkLiveOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_live_events(self, user_input=None):
         if user_input is not None:
-            return self._save({"live_events": user_input["live_events"]})
+            return self._save(user_input)
         return self.async_show_form(
             step_id="live_events",
             data_schema=vol.Schema(
-                {vol.Required("live_events", default=self._pending["live_events"]): bool}
+                {
+                    vol.Required("live_events", default=self._pending["live_events"]): bool,
+                    vol.Optional(
+                        "live_motion_timeout", default=self._pending["live_motion_timeout"]
+                    ): vol.All(vol.Coerce(int), vol.Range(min=1, max=3600)),
+                }
             ),
         )
 

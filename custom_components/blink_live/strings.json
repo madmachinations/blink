@@ -38,7 +38,7 @@
         "data": {
           "poll_interval": "Recording and device poll interval (seconds)",
           "recording_source": "Recording sources (usb, cloud, or all)",
-          "motion_timeout": "Motion sensor reset delay (seconds after discovery)",
+          "motion_timeout": "Recording-derived motion reset delay (seconds after discovery)",
           "stream_duration": "Maximum live session duration (seconds)",
           "automatic_downloads": "Automatically download newly discovered clips",
           "archive_directory": "Existing archive directory inside HA",
@@ -95,9 +95,10 @@
       },
       "live_events": {
         "title": "Live events (experimental)",
-        "description": "Receive doorbell presses and motion directly from Blink push notifications. Everything runs inside this integration. Requires outbound internet access to Google on TCP 5228. In live mode recordings no longer generate inferred motion, including during connection outages. Verify a physical press and separate motion after enabling: a connected transport alone does not prove event delivery. Camera streaming and recording discovery continue independently.",
+        "description": "Enabled by default. Receive doorbell presses and motion directly from Blink push notifications. Everything runs inside this integration. Requires outbound internet access to Google on TCP 5228. In live mode recordings no longer generate inferred motion, including during connection outages. Verify a physical press and separate motion after enabling: a connected transport alone does not prove event delivery. Camera streaming and recording discovery continue independently. Live motion clears 15 seconds after the latest accepted motion notification by default; each new notification for that camera restarts the expiry. Adjust the expiry below if your cameras notify less frequently. This estimates recent motion, rather than receiving an explicit motion-ended signal.",
         "data": {
-          "live_events": "Enable live events"
+          "live_events": "Enable live events",
+          "live_motion_timeout": "Live motion expiry (seconds since latest notification)"
         }
       }
     },
