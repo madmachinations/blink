@@ -13,16 +13,21 @@ import aiohttp
 
 from .client import BlinkClient
 from .errors import BlinkError, VerificationRequired
-from .event_log import log_events
 from .gateway import StreamGateway, stop_process
 from .immis import ImmisStream
+from .notification_log import log_notifications
 from .recordings import Recordings
 from .storage import load_json, save_json
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="Blink Live development client")
-    result.add_argument("--state", type=Path, default=Path.home() / ".blink-live" / "auth.json")
+    result.add_argument(
+        "--state",
+        type=Path,
+        default=Path.home() / ".blink-live" / "auth.json",
+        help="Private CLI login state (separate from HA)",
+    )
     commands = result.add_subparsers(dest="command", required=True)
     commands.add_parser("login", help="Sign in on Blink's hosted page")
     commands.add_parser("devices", help="List camera keys, names and models")
@@ -41,16 +46,20 @@ def parser() -> argparse.ArgumentParser:
     watch.add_argument("--interval", type=int, default=60)
     watch.add_argument("--directory", type=Path, help="Opt into automatic downloads here")
     watch.add_argument("--retention-days", type=int, default=30)
-    events = commands.add_parser(
-        "event-log", help="Log API/recording observations and physical test markers; not push"
+    notifications = commands.add_parser(
+        "notification-log", help="Log live Blink notifications, decisions and physical test markers"
     )
-    events.add_argument(
+    notifications.add_argument(
         "--output", type=Path, required=True, help="New JSONL file (must not exist)"
     )
-    events.add_argument("--interval", type=int, default=60, help="Poll seconds (minimum 30)")
-    events.add_argument("--duration", type=int, help="Stop after this many seconds")
-    events.add_argument("--no-interactive", action="store_true", help="Disable keyboard markers")
-    for command in (clips, watch, events):
+    notifications.add_argument("--duration", type=int, help="Stop after this many seconds")
+    notifications.add_argument(
+        "--no-interactive", action="store_true", help="Disable keyboard markers"
+    )
+    notifications.add_argument(
+        "--raw", action="store_true", help="Include unredacted push payloads in the private file"
+    )
+    for command in (clips, watch):
         command.add_argument("--source", choices=("usb", "cloud", "all"), default="usb")
     return result
 
@@ -86,14 +95,14 @@ async def run(args: argparse.Namespace) -> None:
             print(f"Signed in. Found {len(client.devices)} cameras.")
             return
         await initialize(client)
-        if args.command == "event-log":
-            await log_events(
+        if args.command == "notification-log":
+            await log_notifications(
                 client,
                 args.output,
-                args.interval,
+                args.state.with_name(args.state.stem + "-push.json"),
                 args.duration,
                 not args.no_interactive,
-                recording_source=args.source,
+                raw=args.raw,
             )
             return
         if args.command == "devices":

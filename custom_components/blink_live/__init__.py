@@ -12,6 +12,7 @@ from homeassistant.helpers import entity_registry as er
 from .blink_live_client import AuthError, BlinkError
 from .const import DOMAIN, PLATFORMS
 from .coordinator import BlinkLiveCoordinator
+from .snapshot import async_setup_snapshots
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -114,6 +115,7 @@ async def async_setup(hass, config):
 async def async_setup_entry(hass, entry):
     coordinator = BlinkLiveCoordinator(hass, entry)
     try:
+        await async_setup_snapshots(hass, coordinator)
         await coordinator.initialize()
         await coordinator.async_config_entry_first_refresh()
         entry.runtime_data = coordinator
@@ -121,6 +123,7 @@ async def async_setup_entry(hass, entry):
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         # Initial reconciliation and restored switch state must never replay rings.
         coordinator.motion_ready = True
+        await coordinator.start_push()
     except BlinkError:
         await coordinator.close()
         raise ConfigEntryNotReady("Blink Live service unavailable") from None

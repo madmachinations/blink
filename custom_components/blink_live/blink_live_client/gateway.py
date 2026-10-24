@@ -5,7 +5,7 @@ import contextlib
 import logging
 import secrets
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from aiohttp import web
 
@@ -33,7 +33,15 @@ async def stop_process(process: asyncio.subprocess.Process) -> None:
 
 
 class LiveSession:
-    def __init__(self, client: BlinkClient, device: Device, ffmpeg: str, duration: int) -> None:
+    def __init__(
+        self,
+        client: BlinkClient,
+        device: Device,
+        ffmpeg: str,
+        duration: int,
+        *,
+        on_activity_changed: Callable[[], None] | None = None,
+    ) -> None:
         self.client, self.device = client, device
         self.ffmpeg, self.duration = ffmpeg, duration
         self.consumers: set[asyncio.Queue] = set()
@@ -41,6 +49,21 @@ class LiveSession:
         self.first_media_seconds: float | None = None
         self.failure: str | None = None
         self.task: asyncio.Task | None = None
+        self.process: asyncio.subprocess.Process | None = None
+        self.active = False
+        self._on_activity_changed = on_activity_changed
+
+    def _activity_changed(self) -> None:
+        if self._on_activity_changed:
+            self._on_activity_changed()
+
+    async def _watch_process(self, process) -> None:
+        await process.wait()
+        self.active = False
+        self._activity_changed()
+        # Other workers may still be waiting on the camera transport after
+        # FFmpeg exits. End them rather than retaining a dead media session.
+        raise BlinkError("Media normalizer stopped")
 
     def finish(self, queue: asyncio.Queue) -> None:
         while not queue.empty():
@@ -86,6 +109,8 @@ class LiveSession:
     async def run(self) -> None:
         process = None
         try:
+            self.active = True
+            self._activity_changed()
             async with asyncio.timeout(self.duration):
                 response = await self.client.liveview(self.device)
                 async with ImmisStream(response["server"], self.device.serial) as transport:
@@ -130,7 +155,9 @@ class LiveSession:
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.PIPE,
                     )
+                    self.process = process
                     async with asyncio.TaskGroup() as group:
+                        group.create_task(self._watch_process(process))
                         group.create_task(self._feed(transport, process))
                         group.create_task(self._read(process))
                         group.create_task(self._stderr(process))
@@ -153,14 +180,25 @@ class LiveSession:
             self.failure = "Live view ended, failed, or reached its duration limit"
             _LOGGER.debug("Blink live-view session ended")
         finally:
-            if process:
-                await stop_process(process)
-            for queue in tuple(self.consumers):
-                self.finish(queue)
+            try:
+                if process:
+                    await stop_process(process)
+            finally:
+                self.active = False
+                self._activity_changed()
+                for queue in tuple(self.consumers):
+                    self.finish(queue)
 
 
 class StreamGateway:
-    def __init__(self, client: BlinkClient, ffmpeg: str = "ffmpeg", duration: int = 60) -> None:
+    def __init__(
+        self,
+        client: BlinkClient,
+        ffmpeg: str = "ffmpeg",
+        duration: int = 60,
+        *,
+        on_session_changed: Callable[[str], None] | None = None,
+    ) -> None:
         if not 1 <= duration <= 300:
             raise ValueError("Stream duration must be between 1 and 300 seconds")
         self.client, self.ffmpeg, self.duration = client, ffmpeg, duration
@@ -170,7 +208,23 @@ class StreamGateway:
         self._runner: web.AppRunner | None = None
         self._port: int | None = None
         self._closing = False
+        self._on_session_changed = on_session_changed
         self.results: dict[str, dict] = {}
+
+    def is_streaming(self, camera_key: str) -> bool:
+        """Report a consumer's pending or running live stream, excluding URL lookups."""
+        session = self._sessions.get(camera_key)
+        return bool(
+            session
+            and session.active
+            and session.task
+            and not session.task.done()
+            and (session.process is None or session.process.returncode is None)
+        )
+
+    def _session_changed(self, camera_key: str) -> None:
+        if self._on_session_changed:
+            self._on_session_changed(camera_key)
 
     async def start(self) -> None:
         app = web.Application(handler_args={"handler_cancellation": True})
@@ -197,7 +251,13 @@ class StreamGateway:
                 raise BlinkError("Media gateway is stopping")
             session = self._sessions.get(device.key)
             if session is None or session.task.done():
-                session = LiveSession(self.client, device, self.ffmpeg, self.duration)
+                session = LiveSession(
+                    self.client,
+                    device,
+                    self.ffmpeg,
+                    self.duration,
+                    on_activity_changed=lambda: self._session_changed(device.key),
+                )
                 self._sessions[device.key] = session
                 session.task = asyncio.create_task(session.run(), name="blink-live-session")
             if len(session.consumers) >= 4:

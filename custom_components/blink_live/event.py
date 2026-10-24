@@ -60,7 +60,7 @@ class BlinkRecordingEvent(BlinkLiveEntity, EventEntity):
 class BlinkDoorbellPress(BlinkLiveEntity, EventEntity):
     """Doorbell reports from a local button or explicitly enabled motion routing.
 
-    No timestamp is restored or generated on startup. A future verified push
+    No timestamp is restored or generated on startup. The direct Blink push
     receiver can use the same per-account signal with its own source metadata.
     """
 

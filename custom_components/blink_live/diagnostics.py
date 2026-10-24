@@ -19,7 +19,15 @@ async def async_get_config_entry_diagnostics(hass, entry):
         "archive_count": len(coordinator.recordings.state["archive"]),
         "pending_download_count": len(coordinator.recordings.state["pending"]),
         "clip_error": coordinator.clip_error,
-        "push_supported": False,
+        "push_supported": True,
+        "push_hardware_validation_required": True,
+        "push": {
+            "status": coordinator.push.status if coordinator.push else "disabled",
+            "last_received_at": coordinator.push.last_received_at if coordinator.push else None,
+            "accepted_events": coordinator.push.accepted_events if coordinator.push else 0,
+            "rejected_events": coordinator.push.rejected_events if coordinator.push else 0,
+            "receipt_failures": coordinator.push.receipt_failures if coordinator.push else 0,
+        },
         "options": {
             key: value
             for key, value in coordinator.options.items()
@@ -31,6 +39,8 @@ async def async_get_config_entry_diagnostics(hass, entry):
                 "retention_days",
                 "recording_source",
                 "motion_timeout",
+                "live_events",
+                "live_motion_timeout",
                 "rtsp_enabled",
                 "rtsp_port",
                 "http_events_enabled",

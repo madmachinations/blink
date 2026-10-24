@@ -4,6 +4,7 @@ from homeassistant.components.camera import Camera, CameraEntityFeature
 from homeassistant.core import callback
 
 from .entity import BlinkLiveEntity
+from .snapshot import snapshot_url
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
@@ -45,7 +46,8 @@ class BlinkLiveCamera(BlinkLiveEntity, Camera):
     @property
     def extra_state_attributes(self):
         attributes = {
-            "snapshot_cached_at": self.coordinator.snapshot_cached_at.get(self.device_key)
+            "snapshot_cached_at": self.coordinator.snapshot_cached_at.get(self.device_key),
+            "snapshot_url": snapshot_url(self.coordinator, self.device_key),
         }
         if self.coordinator.options.get("rtsp_enabled"):
             # The host is deliberately a placeholder: a wildcard/container bind

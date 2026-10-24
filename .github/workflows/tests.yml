@@ -46,6 +46,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
+      - name: Install system FFmpeg for media tests
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pip install -e '.[test,ha-test]'
       - run: pytest tests/ha -q
   build:

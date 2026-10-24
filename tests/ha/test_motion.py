@@ -82,6 +82,126 @@ async def test_optional_rtsp_lifecycle_and_attribute(hass, motion_setup, device)
     assert server._server is None and entry.runtime_data.rtsp is None
 
 
+async def test_camera_preview_and_source_lookup_leave_stream_sensor_off(hass, motion_setup, device):
+    from homeassistant.components.camera import async_get_image, async_get_stream_source
+
+    entry, _, entity, _, _ = motion_setup
+    coordinator = entry.runtime_data
+    camera_id = entity("camera", device, "camera")
+    sensor_id = entity("binary_sensor", device, "live_stream_active")
+    coordinator.snapshots[device.key] = b"\xff\xd8cached JPEG"
+    coordinator.client.liveview = AsyncMock()
+    for _ in range(3):
+        assert (await async_get_image(hass, camera_id)).content == b"\xff\xd8cached JPEG"
+        assert await async_get_stream_source(hass, camera_id)
+    await hass.async_block_till_done()
+    assert coordinator.gateway._sessions == {}
+    assert hass.states.get(sensor_id).state == "off"
+    coordinator.client.liveview.assert_not_called()
+
+
+@pytest.mark.parametrize("ending", ["disconnect", "process_exit", "shutdown"])
+async def test_live_stream_sensor_tracks_shared_sessions(
+    hass, motion_setup, device, monkeypatch, ending, ffmpeg, transport_stream
+):
+    entry, _, entity, other, camera = motion_setup
+    coordinator = entry.runtime_data
+    gateway = coordinator.gateway
+    sensor = entity("binary_sensor", device, "live_stream_active")
+    other_sensor = entity("binary_sensor", other, "live_stream_active")
+    camera_sensor = entity("binary_sensor", camera, "live_stream_active")
+    assert sensor and other_sensor and camera_sensor
+    for sensor_id in (sensor, other_sensor, camera_sensor):
+        assert hass.states.get(sensor_id).state == "off"
+    registry = er.async_get(hass)
+    assert (
+        registry.async_get(sensor).device_id
+        == registry.async_get(entity("camera", device, "camera")).device_id
+    )
+    assert hass.states.get(sensor).attributes["friendly_name"].endswith("Live stream active")
+
+    requested, connect = asyncio.Event(), asyncio.Event()
+    transcoder_started, media_ready = asyncio.Event(), asyncio.Event()
+
+    async def liveview(_device):
+        requested.set()
+        await connect.wait()
+        return {"server": "fixture"}
+
+    class Transport:
+        def __init__(self, *_):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def packets(self):
+            transcoder_started.set()
+            await media_ready.wait()
+            for index in range(0, len(transport_stream), 1316):
+                yield transport_stream[index : index + 1316]
+                await asyncio.sleep(0.001)
+            await asyncio.Event().wait()
+
+    coordinator.client.liveview = liveview
+    gateway.ffmpeg = ffmpeg
+    monkeypatch.setattr(
+        "custom_components.blink_live.blink_live_client.gateway.ImmisStream", Transport
+    )
+    first, second = gateway.subscribe(device), gateway.subscribe(device)
+    pending = asyncio.create_task(anext(first))
+    try:
+        await requested.wait()
+        await hass.async_block_till_done()
+        assert gateway.is_streaming(device.key)
+        assert hass.states.get(sensor).state == "on"
+        connect.set()
+        await transcoder_started.wait()
+        await hass.async_block_till_done()
+        assert gateway._sessions[device.key].process.returncode is None
+        assert hass.states.get(sensor).state == "on"
+        media_ready.set()
+        async with asyncio.timeout(8):
+            assert await pending
+        await hass.async_block_till_done()
+        assert hass.states.get(sensor).state == "on"
+        assert hass.states.get(other_sensor).state == "off"
+        assert hass.states.get(camera_sensor).state == "off"
+        # Advance another subscriber into the same running session.
+        next_packet = asyncio.create_task(anext(second))
+        await asyncio.sleep(0)
+        session = gateway._sessions[device.key]
+        assert session.process.returncode is None
+        for queue in session.consumers:
+            queue.put_nowait(b"packet")
+        assert await next_packet
+        await first.aclose()
+        await hass.async_block_till_done()
+        assert hass.states.get(sensor).state == "on"
+        if ending == "disconnect":
+            await second.aclose()
+        elif ending == "shutdown":
+            await gateway.close()
+        else:
+            # Kill actual FFmpeg while the camera transport and viewer stay open.
+            session.process.kill()
+            async with asyncio.timeout(3):
+                await session.task
+        await hass.async_block_till_done()
+        assert session.process.returncode is not None
+        assert hass.states.get(sensor).state == "off"
+        assert hass.states.get(other_sensor).state == "off"
+        assert not gateway.is_streaming(device.key)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        await first.aclose()
+        await second.aclose()
+
+
 @pytest.fixture
 async def motion_setup(
     hass, device, module, clip, enable_custom_integrations, request, loopback_sockets
@@ -106,7 +226,7 @@ async def motion_setup(
         domain=DOMAIN,
         unique_id="1",
         data={"account_id": 1, "tier": "prod"},
-        options={"recording_source": source, "motion_timeout": 10},
+        options={"recording_source": source, "motion_timeout": 10, "live_events": False},
     )
     entry.add_to_hass(hass)
     with (
@@ -224,6 +344,265 @@ async def test_backend_can_be_replaced_without_changing_entities(hass, motion_se
         coordinator.async_report_motion("missing", source="blink_push", event_id="2")
     with pytest.raises(HomeAssistantError):
         coordinator.async_report_motion(device.key, source="unknown", event_id="2")
+
+
+async def test_opt_in_push_routing_status_and_reload(hass, motion_setup, device, freezer):
+    import time
+
+    from custom_components.blink_live.blink_live_client.push import PushReceiver
+    from custom_components.blink_live.blink_live_client.push_proto import blob, fields, number
+    from custom_components.blink_live.diagnostics import async_get_config_entry_diagnostics
+
+    entry, data, entity, _, _ = motion_setup
+    assert entry.runtime_data.push is None
+    # Exercise a real options reload, suppressing only the external receiver task.
+    with patch.object(PushReceiver, "start") as start:
+        hass.config_entries.async_update_entry(
+            entry, options={**entry.options, "live_events": True}
+        )
+        await hass.async_block_till_done()
+    start.assert_called_once()
+    coordinator = entry.runtime_data
+    receiver = coordinator.push
+    assert receiver is not None and coordinator.motion_backend == "blink_push"
+    registry = er.async_get(hass)
+    connection = registry.async_get_entity_id("binary_sensor", DOMAIN, "1_push_connection")
+    receiver._status("connected")
+    await hass.async_block_till_done()
+    assert hass.states.get(connection).state == "on"
+    emit = coordinator.http_events.emit = MagicMock()
+    rings, motions = [], []
+    hass.bus.async_listen("blink_live_doorbell_pressed", lambda event: rings.append(event.data))
+    hass.bus.async_listen("blink_live_motion_detected", lambda event: motions.append(event.data))
+
+    def push(kind, identity):
+        payload = {"event_type": kind, "category": "media", "camera_id": str(device.id)}
+        return fields(
+            blob(9, identity)
+            + number(18, int(time.time() * 1000))
+            + b"".join(blob(7, blob(1, k) + blob(2, v)) for k, v in payload.items())
+        )
+
+    data["usb"].append(replace(data["usb"][0], id="7"))
+    await coordinator.async_refresh()
+    assert not coordinator.motion_active
+    await receiver._message(push("button_press", "physical-press"))
+    await receiver._message(push("button_press", "physical-press"))
+    await receiver._message(push("pir", "physical-motion"))
+    await hass.async_block_till_done()
+    assert len(rings) == len(motions) == 1
+    assert rings[0]["source"] == motions[0]["source"] == "blink_push"
+    assert motions[0]["inferred"] is False
+    assert len(rings[0]["event_id"]) == 64
+    assert hass.states.get(entity("event", device, "press")).attributes["event_type"] == "ring"
+    assert hass.states.get(entity("binary_sensor", device, "motion")).state == "on"
+    assert [call.args[0] for call in emit.call_args_list] == ["doorbell_pressed", "motion_detected"]
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+    assert diagnostics["push"]["accepted_events"] == 2
+    assert "fcm_token" not in str(diagnostics) and "physical-press" not in str(diagnostics)
+
+    # A transport outage does not silently re-enable recording inference.
+    receiver._status("reconnecting")
+    data["usb"].append(replace(data["usb"][0], id="8"))
+    await coordinator.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(connection).state == "off" and len(motions) == 1
+    freezer.tick(timedelta(seconds=16))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert hass.states.get(entity("binary_sensor", device, "motion")).state == "off"
+
+    # The HA Store checkpoint suppresses an old press after reload.
+    with patch.object(PushReceiver, "start"):
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+    await entry.runtime_data.push._message(push("button_press", "physical-press"))
+    await hass.async_block_till_done()
+    assert len(rings) == 1 and receiver.status == "disabled"
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "live_events": False})
+    await hass.async_block_till_done()
+    assert entry.runtime_data.push is None
+    assert entry.runtime_data.motion_backend == "recording"
+    data["usb"].append(replace(data["usb"][0], id="9"))
+    await entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert len(motions) == 2 and motions[-1]["source"] == "recording"
+
+
+async def test_live_event_options_preserve_other_settings(hass, motion_setup):
+    entry, _, _, _, _ = motion_setup
+    with patch.object(hass.config_entries, "async_reload", AsyncMock()):
+        start = await hass.config_entries.options.async_init(entry.entry_id)
+        assert "live_events" in start["menu_options"]
+        form = await hass.config_entries.options.async_configure(
+            start["flow_id"], {"next_step_id": "live_events"}
+        )
+        assert form["step_id"] == "live_events"
+        result = await hass.config_entries.options.async_configure(
+            form["flow_id"], {"live_events": False, "live_motion_timeout": 20}
+        )
+        assert result["data"]["live_events"] is False
+        assert result["data"]["motion_timeout"] == 10
+        assert result["data"]["live_motion_timeout"] == 20
+        await hass.async_block_till_done()
+
+
+async def test_live_events_default_on_without_overriding_explicit_opt_out(hass, motion_setup):
+    from custom_components.blink_live.blink_live_client.push import PushReceiver
+
+    entry, _, _, _, _ = motion_setup
+    options = dict(entry.options)
+    options.pop("live_events")
+    # Entries without a saved preference, including existing installations,
+    # receive the new default on their next load.
+    with patch.object(PushReceiver, "start") as start:
+        hass.config_entries.async_update_entry(entry, options=options)
+        await hass.async_block_till_done()
+    start.assert_called_once()
+    assert entry.runtime_data.options["live_events"] is True
+    assert entry.runtime_data.motion_backend == "blink_push"
+    assert entry.runtime_data.push is not None
+
+    with patch.object(PushReceiver, "start") as start:
+        hass.config_entries.async_update_entry(entry, options={**options, "live_events": False})
+        await hass.async_block_till_done()
+    start.assert_not_called()
+    assert entry.runtime_data.push is None
+    assert entry.runtime_data.motion_backend == "recording"
+
+
+@pytest.mark.parametrize("latest_kind", ["cv_motion", "cam2sm_motion"])
+async def test_live_motion_renews_from_either_signal_and_ignores_unknowns_and_duplicates(
+    hass, motion_setup, device, freezer, latest_kind
+):
+    import time
+
+    from custom_components.blink_live.blink_live_client.push import PushReceiver
+    from custom_components.blink_live.blink_live_client.push_proto import blob, fields, number
+
+    entry, _, entity, other, _ = motion_setup
+    coordinator = entry.runtime_data
+    coordinator.motion_backend = "blink_push"
+    emit = coordinator.http_events.emit = MagicMock()
+    receiver = PushReceiver(
+        coordinator.client, {}, AsyncMock(), coordinator._push_event, MagicMock()
+    )
+
+    async def advance(seconds):
+        freezer.tick(timedelta(seconds=seconds))
+        async_fire_time_changed(hass, dt_util.utcnow())
+        await hass.async_block_till_done()
+
+    async def notify(dev, identity, *, category="motion", kind="cam2sm_motion"):
+        payload = {"category": category, "event_type": kind, "camera_id": str(dev.id)}
+        await receiver._message(
+            fields(
+                blob(9, identity)
+                + number(18, int(time.time() * 1000))
+                + b"".join(blob(7, blob(1, key) + blob(2, value)) for key, value in payload.items())
+            )
+        )
+        await hass.async_block_till_done()
+
+    def motion(dev):
+        return hass.states.get(entity("binary_sensor", dev, "motion")).state
+
+    # Defaults merged into an existing entry: no option migration is needed.
+    assert coordinator.options["live_motion_timeout"] == 15
+    assert coordinator.options["motion_timeout"] == 10
+    if latest_kind == "cam2sm_motion":
+        await notify(device, "first", category="media", kind="cv_motion")
+    else:
+        await notify(device, "first")
+    await advance(5)
+    await notify(other, "other-camera")
+    await advance(5)
+    await notify(device, "repeat")
+    await advance(6)
+    assert motion(device) == motion(other) == "on"
+    await advance(4.1)
+    assert motion(other) == "off" and motion(device) == "on"
+    # Whichever recognized motion signal arrived last owns the expiry.
+    await notify(
+        device,
+        "latest",
+        category="media" if latest_kind == "cv_motion" else "motion",
+        kind=latest_kind,
+    )
+    await advance(3.9)
+    await notify(device, "repeat")
+    assert motion(device) == "on"
+    await advance(1.1)
+    assert motion(device) == "on"  # The latest report extended the old deadline.
+    await advance(9)
+    await notify(device, "unknown-media", category="media", kind="unrecognized")
+    await advance(1.1)
+    assert motion(device) == "off"
+    assert [call.args[0] for call in emit.call_args_list].count("motion_detected") == 4
+    assert [call.args[0] for call in emit.call_args_list].count("motion_cleared") == 2
+
+
+async def test_live_motion_timeout_is_from_receipt_not_provider_timestamp(
+    hass, motion_setup, device, freezer
+):
+    entry, _, entity, _, _ = motion_setup
+    coordinator = entry.runtime_data
+    coordinator.motion_backend = "blink_push"
+    coordinator.options["live_motion_timeout"] = 7
+    # Provider timestamps describe when Blink detected motion, not our deadline.
+    coordinator.async_report_motion(
+        device.key,
+        source="blink_push",
+        event_id="delayed-push",
+        occurred_at=(dt_util.utcnow() - timedelta(seconds=30)).isoformat(),
+    )
+    freezer.tick(timedelta(seconds=6))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    sensor = entity("binary_sensor", device, "motion")
+    assert hass.states.get(sensor).state == "on"
+    freezer.tick(timedelta(seconds=2))
+    async_fire_time_changed(hass, dt_util.utcnow())
+    await hass.async_block_till_done()
+    assert hass.states.get(sensor).state == "off"
+
+
+async def test_push_failures_surface_repairs_without_disabling_cameras(hass, motion_setup):
+    from homeassistant.helpers import issue_registry as ir
+
+    entry, _, _, _, _ = motion_setup
+    coordinator = entry.runtime_data
+    coordinator._push_status("error")
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, f"{entry.entry_id}_live_events") is not None
+    assert coordinator.last_update_success
+    with patch.object(entry, "async_start_reauth") as reauth:
+        coordinator._push_status("auth_failed")
+        reauth.assert_called_once_with(hass)
+    coordinator._push_status("connected")
+    assert issues.async_get_issue(DOMAIN, f"{entry.entry_id}_live_events") is None
+
+
+async def test_push_store_write_failure_blocks_dispatch(hass, motion_setup, device):
+    from homeassistant.util.file import WriteError
+
+    from custom_components.blink_live.blink_live_client.push import PushReceiver
+    from custom_components.blink_live.blink_live_client.push_proto import blob, fields
+
+    entry, _, _, _, _ = motion_setup
+    coordinator = entry.runtime_data
+    receiver = PushReceiver(
+        coordinator.client, {}, coordinator.push_store.async_save, MagicMock(), MagicMock()
+    )
+    # HA's regular Store swallows WriteError. Our checkpoint must propagate it.
+    with patch(
+        "homeassistant.helpers.storage.Store._async_write_data",
+        AsyncMock(side_effect=WriteError),
+    ):
+        with pytest.raises(OSError, match="checkpoint"):
+            await receiver._message(fields(blob(9, "not-durable")))
+    assert not receiver.state
+    receiver.on_event.assert_not_called()
 
 
 async def test_switch_restores_without_motion_or_rings_and_timers_are_removed(

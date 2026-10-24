@@ -184,11 +184,13 @@ async def test_setup_and_unload_release_gateway(hass, client):
     coordinator = MagicMock()
     coordinator.initialize = AsyncMock()
     coordinator.async_config_entry_first_refresh = AsyncMock()
+    coordinator.start_push = AsyncMock()
     coordinator.close = AsyncMock()
     coordinator.async_shutdown = AsyncMock()
     await async_setup(hass, {})
     with (
         patch("custom_components.blink_live.BlinkLiveCoordinator", return_value=coordinator),
+        patch("custom_components.blink_live.async_setup_snapshots", new_callable=AsyncMock),
         patch(
             "homeassistant.config_entries.ConfigEntries.async_forward_entry_setups",
             return_value=None,
@@ -210,7 +212,10 @@ async def test_setup_auth_failure_releases_gateway(hass, client):
     coordinator = MagicMock()
     coordinator.initialize = AsyncMock(side_effect=ConfigEntryAuthFailed("expired"))
     coordinator.close = AsyncMock()
-    with patch("custom_components.blink_live.BlinkLiveCoordinator", return_value=coordinator):
+    with (
+        patch("custom_components.blink_live.BlinkLiveCoordinator", return_value=coordinator),
+        patch("custom_components.blink_live.async_setup_snapshots", new_callable=AsyncMock),
+    ):
         with pytest.raises(ConfigEntryAuthFailed):
             await async_setup_entry(hass, entry)
         coordinator.close.assert_awaited_once()
@@ -286,7 +291,7 @@ async def test_real_entry_platforms_recording_events_and_reload(
         domain=DOMAIN,
         unique_id="1",
         title="Blink Live",
-        options={"recording_source": recording_source},
+        options={"recording_source": recording_source, "live_events": False},
         data={
             "account_id": 1,
             "hardware_id": "test",
