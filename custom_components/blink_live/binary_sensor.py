@@ -1,11 +1,11 @@
-"""Motion sensors backed by the shared motion reporter, independently of its input."""
+"""Camera motion and live session sensors, plus account push connection status."""
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 from homeassistant.core import callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import EntityCategory
 
-from .const import motion_signal, push_signal
+from .const import motion_signal, push_signal, stream_signal
 from .entity import BlinkLiveEntity
 
 
@@ -22,6 +22,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
             if key not in known:
                 known.add(key)
                 entities.append(BlinkMotionSensor(coordinator, device))
+                entities.append(BlinkLiveStreamActive(coordinator, device))
         async_add_entities(entities)
 
     add_devices()
@@ -60,6 +61,38 @@ class BlinkMotionSensor(BlinkLiveEntity, BinarySensorEntity):
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass, motion_signal(self.coordinator.entry.entry_id), update
+            )
+        )
+
+
+class BlinkLiveStreamActive(BlinkLiveEntity, BinarySensorEntity):
+    """Track pending and running live streams shared by HTTP and RTSP viewers."""
+
+    _attr_name = "Live stream active"
+
+    def __init__(self, coordinator, device):
+        super().__init__(coordinator, device, "live_stream_active")
+
+    @property
+    def available(self):
+        # Local session status remains known even when a cloud poll fails.
+        return self.device is not None
+
+    @property
+    def is_on(self):
+        return self.coordinator.gateway.is_streaming(self.device_key)
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+
+        @callback
+        def update(camera_key):
+            if camera_key == self.device_key:
+                self.async_write_ha_state()
+
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, stream_signal(self.coordinator.entry.entry_id), update
             )
         )
 

@@ -24,6 +24,10 @@ def push_signal(entry_id: str) -> str:
     return f"{DOMAIN}_{entry_id}_push"
 
 
+def stream_signal(entry_id: str) -> str:
+    return f"{DOMAIN}_{entry_id}_stream"
+
+
 DEFAULT_OPTIONS = {
     "live_events": True,
     "live_motion_timeout": 15,

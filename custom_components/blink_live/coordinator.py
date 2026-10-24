@@ -25,7 +25,14 @@ from .blink_live_client.gateway import StreamGateway
 from .blink_live_client.push import PushReceiver
 from .blink_live_client.recordings import Recordings
 from .blink_live_client.rtsp import RtspServer
-from .const import DEFAULT_OPTIONS, DOMAIN, doorbell_press_signal, motion_signal, push_signal
+from .const import (
+    DEFAULT_OPTIONS,
+    DOMAIN,
+    doorbell_press_signal,
+    motion_signal,
+    push_signal,
+    stream_signal,
+)
 from .http_events import HttpEventDispatcher
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,6 +73,7 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
             self.client,
             get_ffmpeg_manager(hass).binary,
             self.options["stream_duration"],
+            on_session_changed=self._stream_changed,
         )
         self.rtsp = None
         self.http_events = HttpEventDispatcher(
@@ -88,6 +96,10 @@ class BlinkLiveCoordinator(DataUpdateCoordinator):
         self.ring_on_motion: dict[str, bool] = {}
         self._motion_timers: dict = {}
         self._motion_seen: OrderedDict = OrderedDict()
+
+    @callback
+    def _stream_changed(self, camera_key):
+        async_dispatcher_send(self.hass, stream_signal(self.entry.entry_id), camera_key)
 
     async def _save_auth(self, state):
         self.hass.config_entries.async_update_entry(self.entry, data=dict(state))

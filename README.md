@@ -139,6 +139,32 @@ no file. To save the image, follow it with HA's `camera.snapshot` action using a
 allowed destination. `camera.snapshot` alone saves the cached image without taking
 a new photo.
 
+### Snapshot URLs
+
+Each camera exposes a **`snapshot_url`** attribute in **Developer tools → States**.
+Copy that complete URL into Scrypted's snapshot URL setting for the camera:
+
+```text
+http://HA-HOST:8123/api/blink_live/snapshot/ENTRY-ID/2_doorbell_3?token=CAMERA-TOKEN
+```
+
+Use the Home Assistant address reachable from Scrypted, replacing `HA-HOST:8123`
+if shown. Keep the path and token unchanged. This uses HA's HTTP server (and its
+configured HTTP/HTTPS port), independently of the RTSP server.
+
+The URL and token persist across integration reloads and Home Assistant restarts.
+They are tied to the configuration entry and camera, so removing and re-adding the
+integration creates new URLs. Renaming a camera entity does not change its URL.
+The token grants access to that camera's cached image; treat the complete URL as
+a password. No Home Assistant bearer token or login is needed.
+
+Every request returns the latest cached JPEG without requesting a new capture,
+contacting Blink, or starting a live stream. Repeated HomeKit snapshot requests
+therefore do not wake the camera. The cache updates when the normal refresh finds
+a changed Blink thumbnail, or when `blink_live.take_snapshot` succeeds. It may be
+older than the most recent motion event. Until an image is cached, the URL returns
+HTTP 404; a missing or incorrect token returns HTTP 401 for an available camera.
+
 ### System and camera controls
 
 | Entity | What it controls |
@@ -146,8 +172,20 @@ a new photo.
 | System **Armed** switch | On arms that Blink system/network; Off disarms it. |
 | Camera **Motion detection** switch | Enables/disables that camera's actual Blink motion setting. |
 | Camera **Motion** sensor | Reports activity inferred from a newly discovered recording. |
+| Camera **Live stream active** sensor | On while an HTTP or RTSP consumer has a pending or running live stream for that camera. Multiple viewers share one process. |
 | Doorbell **Ring on motion** switch | Triggers a doorbell pressed event if the doorbell detects motion. |
 | Doorbell **Ring doorbell** button | Reports a press locally for HA/HomeKit; does not operate the physical chime. |
+
+**Live stream active** includes waiting for a live connection to be established,
+and turns off when the stream fails, expires or stops, even if a viewer remains
+subscribed. Reading a cached snapshot or looking up the stream URL does not
+activate it. A dashboard card configured to automatically request live video
+does count as a consumer. It tracks sessions through this integration;
+viewing independently in the Blink app is not reported.
+
+A picture-glance card with `camera_view: auto` displays cached thumbnails.
+Opening its default camera popup loads HA's live player, which requests a stream
+before a separate Play press. That pending live request activates the sensor.
 
 Motion recording generally requires **both an armed system and an enabled camera**.
 Each system has its own device and switch. Enabling one camera does not arm the

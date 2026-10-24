@@ -82,6 +82,126 @@ async def test_optional_rtsp_lifecycle_and_attribute(hass, motion_setup, device)
     assert server._server is None and entry.runtime_data.rtsp is None
 
 
+async def test_camera_preview_and_source_lookup_leave_stream_sensor_off(hass, motion_setup, device):
+    from homeassistant.components.camera import async_get_image, async_get_stream_source
+
+    entry, _, entity, _, _ = motion_setup
+    coordinator = entry.runtime_data
+    camera_id = entity("camera", device, "camera")
+    sensor_id = entity("binary_sensor", device, "live_stream_active")
+    coordinator.snapshots[device.key] = b"\xff\xd8cached JPEG"
+    coordinator.client.liveview = AsyncMock()
+    for _ in range(3):
+        assert (await async_get_image(hass, camera_id)).content == b"\xff\xd8cached JPEG"
+        assert await async_get_stream_source(hass, camera_id)
+    await hass.async_block_till_done()
+    assert coordinator.gateway._sessions == {}
+    assert hass.states.get(sensor_id).state == "off"
+    coordinator.client.liveview.assert_not_called()
+
+
+@pytest.mark.parametrize("ending", ["disconnect", "process_exit", "shutdown"])
+async def test_live_stream_sensor_tracks_shared_sessions(
+    hass, motion_setup, device, monkeypatch, ending, ffmpeg, transport_stream
+):
+    entry, _, entity, other, camera = motion_setup
+    coordinator = entry.runtime_data
+    gateway = coordinator.gateway
+    sensor = entity("binary_sensor", device, "live_stream_active")
+    other_sensor = entity("binary_sensor", other, "live_stream_active")
+    camera_sensor = entity("binary_sensor", camera, "live_stream_active")
+    assert sensor and other_sensor and camera_sensor
+    for sensor_id in (sensor, other_sensor, camera_sensor):
+        assert hass.states.get(sensor_id).state == "off"
+    registry = er.async_get(hass)
+    assert (
+        registry.async_get(sensor).device_id
+        == registry.async_get(entity("camera", device, "camera")).device_id
+    )
+    assert hass.states.get(sensor).attributes["friendly_name"].endswith("Live stream active")
+
+    requested, connect = asyncio.Event(), asyncio.Event()
+    transcoder_started, media_ready = asyncio.Event(), asyncio.Event()
+
+    async def liveview(_device):
+        requested.set()
+        await connect.wait()
+        return {"server": "fixture"}
+
+    class Transport:
+        def __init__(self, *_):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            pass
+
+        async def packets(self):
+            transcoder_started.set()
+            await media_ready.wait()
+            for index in range(0, len(transport_stream), 1316):
+                yield transport_stream[index : index + 1316]
+                await asyncio.sleep(0.001)
+            await asyncio.Event().wait()
+
+    coordinator.client.liveview = liveview
+    gateway.ffmpeg = ffmpeg
+    monkeypatch.setattr(
+        "custom_components.blink_live.blink_live_client.gateway.ImmisStream", Transport
+    )
+    first, second = gateway.subscribe(device), gateway.subscribe(device)
+    pending = asyncio.create_task(anext(first))
+    try:
+        await requested.wait()
+        await hass.async_block_till_done()
+        assert gateway.is_streaming(device.key)
+        assert hass.states.get(sensor).state == "on"
+        connect.set()
+        await transcoder_started.wait()
+        await hass.async_block_till_done()
+        assert gateway._sessions[device.key].process.returncode is None
+        assert hass.states.get(sensor).state == "on"
+        media_ready.set()
+        async with asyncio.timeout(8):
+            assert await pending
+        await hass.async_block_till_done()
+        assert hass.states.get(sensor).state == "on"
+        assert hass.states.get(other_sensor).state == "off"
+        assert hass.states.get(camera_sensor).state == "off"
+        # Advance another subscriber into the same running session.
+        next_packet = asyncio.create_task(anext(second))
+        await asyncio.sleep(0)
+        session = gateway._sessions[device.key]
+        assert session.process.returncode is None
+        for queue in session.consumers:
+            queue.put_nowait(b"packet")
+        assert await next_packet
+        await first.aclose()
+        await hass.async_block_till_done()
+        assert hass.states.get(sensor).state == "on"
+        if ending == "disconnect":
+            await second.aclose()
+        elif ending == "shutdown":
+            await gateway.close()
+        else:
+            # Kill actual FFmpeg while the camera transport and viewer stay open.
+            session.process.kill()
+            async with asyncio.timeout(3):
+                await session.task
+        await hass.async_block_till_done()
+        assert session.process.returncode is not None
+        assert hass.states.get(sensor).state == "off"
+        assert hass.states.get(other_sensor).state == "off"
+        assert not gateway.is_streaming(device.key)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        await first.aclose()
+        await second.aclose()
+
+
 @pytest.fixture
 async def motion_setup(
     hass, device, module, clip, enable_custom_integrations, request, loopback_sockets

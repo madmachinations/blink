@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
@@ -14,6 +15,10 @@ async def test_lazy_gateway_token_and_first_viewer_disconnect(device, monkeypatc
     started, stopped = asyncio.Event(), asyncio.Event()
 
     async def run(self):
+        self.process = SimpleNamespace(returncode=None)
+        self.first_media_seconds = 0
+        self.active = True
+        self._activity_changed()
         started.set()
         try:
             while True:
@@ -21,10 +26,16 @@ async def test_lazy_gateway_token_and_first_viewer_disconnect(device, monkeypatc
                     queue.put_nowait(b"\x47" + bytes(187))
                 await asyncio.sleep(0.02)
         finally:
+            self.process.returncode = 0
+            self.active = False
+            self._activity_changed()
             stopped.set()
 
     monkeypatch.setattr(LiveSession, "run", run)
-    gateway = StreamGateway(Client())
+    changes = []
+    gateway = StreamGateway(
+        Client(), on_session_changed=lambda key: changes.append((key, gateway.is_streaming(key)))
+    )
     await gateway.start()
     try:
         assert not started.is_set()
@@ -33,13 +44,16 @@ async def test_lazy_gateway_token_and_first_viewer_disconnect(device, monkeypatc
             async with http.get(gateway.url(device) + "invalid") as response:
                 assert response.status == 404
             assert not started.is_set()
+            assert not changes
             async with http.get(gateway.url(device)) as response:
                 assert response.status == 200
                 assert len(await response.content.readexactly(188)) == 188
+                assert changes == [(device.key, True)]
             async with asyncio.timeout(2):
                 await stopped.wait()
                 while gateway._sessions:  # noqa: ASYNC110 -- wait for asynchronous handler cleanup
                     await asyncio.sleep(0)
+            assert changes == [(device.key, True), (device.key, False)]
     finally:
         await gateway.close()
 
@@ -157,7 +171,45 @@ async def test_duration_limit_and_missing_ffmpeg_cleanup(device):
     assert "credential-like-data" not in session.failure
 
 
-async def test_duration_limit_terminates_actual_normalizer(device, ffmpeg, monkeypatch):
+@pytest.mark.parametrize("ending", ["failure", "cancel"])
+async def test_pending_live_request_is_active_until_failure_or_cancel(device, ending):
+    requested, finish = asyncio.Event(), asyncio.Event()
+
+    async def liveview(_device):
+        requested.set()
+        await finish.wait()
+        raise BlinkError("Fixture connection failure")
+
+    changes = []
+    gateway = StreamGateway(
+        SimpleNamespace(liveview=liveview),
+        on_session_changed=lambda key: changes.append(gateway.is_streaming(key)),
+    )
+    stream = gateway.subscribe(device)
+    pending = asyncio.create_task(anext(stream, None))
+    try:
+        await requested.wait()
+        assert gateway._sessions[device.key].process is None
+        assert gateway.is_streaming(device.key)
+        if ending == "failure":
+            finish.set()
+            assert await pending is None
+        else:
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        assert not gateway.is_streaming(device.key)
+        assert changes == [True, False]
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+        await stream.aclose()
+        await gateway.close()
+
+
+@pytest.mark.parametrize("has_media", [False, True])
+async def test_duration_limit_terminates_actual_normalizer(
+    device, ffmpeg, monkeypatch, transport_stream, has_media
+):
     client = type("Client", (), {})()
     client.liveview = AsyncMock(return_value={"server": "fixture"})
 
@@ -172,14 +224,34 @@ async def test_duration_limit_terminates_actual_normalizer(device, ffmpeg, monke
             pass
 
         async def packets(self):
+            if has_media:
+                for index in range(0, len(transport_stream), 1316):
+                    yield transport_stream[index : index + 1316]
+                    await asyncio.sleep(0.001)
             await asyncio.Event().wait()
             yield b"unreachable"
 
     monkeypatch.setattr("blink_live_client.gateway.ImmisStream", Transport)
-    session = LiveSession(client, device, ffmpeg, 1)
-    async with asyncio.timeout(5):
-        await session.run()
-    assert session.failure == "Live view reached its duration limit"
+    changes = []
+    gateway = StreamGateway(
+        client,
+        ffmpeg,
+        1,
+        on_session_changed=lambda key: changes.append(gateway.is_streaming(key)),
+    )
+    stream = gateway.subscribe(device)
+    try:
+        assert not gateway.is_streaming(device.key)
+        async with asyncio.timeout(5):
+            async for _chunk in stream:
+                pass
+        assert gateway.results[device.key]["failure"] == "Live view reached its duration limit"
+        assert changes[0] is True
+        assert changes[-1] is False
+        assert not gateway.is_streaming(device.key)
+    finally:
+        await stream.aclose()
+        await gateway.close()
 
 
 async def test_slow_viewer_cannot_block_other_viewers(device):
