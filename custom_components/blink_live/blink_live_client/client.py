@@ -124,7 +124,11 @@ class BlinkClient:
                         for version in (3, 4)
                     }:
                         if identifier := response.headers.get("Client-Id"):
-                            self._push_client_id = remote_id(identifier)
+                            # Discovery can return an opaque UUID here, while the
+                            # push registration endpoint still uses a numeric ID.
+                            if (self._push_client_id is None
+                                    and re.fullmatch(r"[0-9]{1,20}", identifier)):
+                                self._push_client_id = identifier
                     return value
             except ApiError as error:
                 _LOGGER.debug("Blink request failed: %s HTTP %s", operation, error.status)
@@ -200,6 +204,8 @@ class BlinkClient:
                 raise BlinkError("Could not discover Blink account region")
         info = await self.request("GET", "/api/v2/users/info")
         self._verification_info = info
+        account_matches = str(info.get("account_id")) == str(self.account_id)
+        self._push_client_id = None
         for field in ("account_id", "client_id", "email"):
             if field in info:
                 self.auth.state[field] = info[field]
@@ -208,6 +214,9 @@ class BlinkClient:
             raise VerificationRequired("client")
         if info.get("phone_verification_required") or info.get("account_verification_required"):
             raise VerificationRequired("account")
+        client_id = str(info.get("client_id", ""))
+        if account_matches and re.fullmatch(r"[0-9]{1,20}", client_id):
+            self._push_client_id = client_id
         await self.discover()
         return info
 

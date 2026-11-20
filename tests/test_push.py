@@ -305,7 +305,8 @@ async def test_google_login_rejection_recovers_android_identity(receiver, monkey
     assert receiver.status == "auth_failed"
 
 
-async def test_blink_client_uses_header_id_and_existing_session(server):
+@pytest.mark.parametrize("client_id", ["88", "12345678-1234-4234-8234-123456789abc"])
+async def test_blink_client_prefers_verified_id_from_initialization(server, client_id):
     calls = []
 
     async def handler(request):
@@ -314,7 +315,9 @@ async def test_blink_client_uses_header_id_and_existing_session(server):
             (request.method, request.path, await request.json() if request.can_read_body else {})
         )
         if request.path.endswith("homescreen"):
-            return web.json_response({}, headers={"Client-Id": "77"})
+            return web.json_response({}, headers={"Client-Id": client_id})
+        if request.path == "/api/v2/users/info":
+            return web.json_response({"account_id": 1, "client_id": 77})
         assert request.headers["Client-Id"] == "77"
         return web.Response(status=204)
 
@@ -336,6 +339,7 @@ async def test_blink_client_uses_header_id_and_existing_session(server):
                 "expires_at": time.time() + 3600,
             },
         )
+        await client.initialize()
         await client.associate_push_token("own-fcm-token")
         await client.acknowledge_push(
             {
@@ -353,10 +357,35 @@ async def test_blink_client_uses_header_id_and_existing_session(server):
                 "tier": "evil.example",
             }
         )
-    assert calls[0][:2] == ("GET", "/api/v3/accounts/1/homescreen")
-    assert calls[1][1] == "/clients/77/update"
-    assert calls[1][2]["notification_key"] == "own-fcm-token"
-    assert [call[2]["status"] for call in calls[2:]] == ["RECEIVED", "UNWANTED"]
+    assert calls[0][:2] == ("GET", "/api/v2/users/info")
+    assert calls[1][:2] == ("GET", "/api/v4/accounts/1/homescreen")
+    assert calls[2][1] == "/clients/77/update"
+    assert calls[2][2]["notification_key"] == "own-fcm-token"
+    assert [call[2]["status"] for call in calls[3:]] == ["RECEIVED", "UNWANTED"]
+
+
+async def test_bad_push_client_id_does_not_break_camera_discovery(server):
+    async def handler(request):
+        assert request.path == "/api/v4/accounts/1/homescreen"
+        return web.json_response(
+            {"owls": [{"id": 2, "network_id": 3, "name": "Camera"}]},
+            headers={"Client-Id": "../not-a-client"},
+        )
+
+    url = await server(handler)
+
+    class LocalClient(BlinkClient):
+        @property
+        def root(self):
+            return url
+
+    async with aiohttp.ClientSession() as session:
+        client = LocalClient(
+            session, {"account_id": 1, "access_token": "test", "expires_at": time.time() + 3600}
+        )
+        await client.discover()
+        assert len(client.devices) == 1
+        assert client._push_client_id is None
 
 
 async def test_missing_header_does_not_use_unverified_client_id(receiver):
